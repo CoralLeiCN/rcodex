@@ -1,6 +1,6 @@
 # rcodex References
 
-This folder is the source-only catalog for the rcodex specifications.
+This folder is the source-only catalog for the rcodex specification.
 
 Online documents are linked rather than copied into this repository. This avoids stale or incomplete local replicas and preserves the original authors' licenses and update history.
 
@@ -8,9 +8,9 @@ Files in this folder contain source identity, version or revision information, d
 
 Research snapshot dates:
 
-- RLM implementation review: 2026-08-19
+- RLM implementation review: 2026-08-31 (upstream commit dated 2026-08-25)
 - Adjacent implementation review: 2026-08-17
-- Official Codex documentation review: 2026-08-19
+- Official Codex documentation review: 2026-08-31
 
 ## Catalog
 
@@ -19,15 +19,10 @@ Research snapshot dates:
 - [Related implementations](related-implementations.md): DSPy.RLM and Prime Agent.
 - [Technology sources](technology.md): primary Python, packaging, validation, testing, and quality-tool documentation.
 
-## Internal specifications
+## Internal specification
 
-- [Core implementation spec](../docs/core-spec.md)
-- [Deferred-feature backlog](../docs/deferred-features.md)
-- [Full target architecture](../docs/recursive-codex-spec.md)
-- [Research interpretation and design rationale](../docs/design-rationale.md)
-- [RLM implementation alignment](../docs/rlm-alignment.md)
-- [Technology stack decision](../docs/tech-stack.md)
-- [Specification review](../docs/spec-review.md)
+- [Implemented specification](../docs/spec.md) — the single authoritative inference runtime,
+  protocol, API, limits, persistence, artifacts, RLM alignment, and security contract.
 
 ## Referencing policy
 

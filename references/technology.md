@@ -1,6 +1,8 @@
 # Technology Sources
 
-These are the primary documentation sources for the decisions recorded in [`docs/tech-stack.md`](../docs/tech-stack.md).
+These are the primary documentation sources for the decisions recorded in the
+[technology and Codex integration section of the consolidated
+specification](../docs/spec.md#3-technology-and-codex-integration).
 
 Reviewed: 2026-08-19
 

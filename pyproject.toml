@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "recursive-codex"
+version = "0.0.1"
+description = "A bounded Recursive Language Model runner using the Codex Python SDK"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "rcodex contributors" }]
+dependencies = [
+  "openai-codex==0.147.0",
+  "pydantic>=2.13,<3",
+]
+
+[project.scripts]
+rcodex = "rcodex.cli:main"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18,<2",
+  "pytest>=8.4,<10",
+  "pytest-asyncio>=1.2,<2",
+  "ruff>=0.13,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rcodex"]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib -m 'not live'"
+asyncio_mode = "auto"
+markers = [
+  "live: authenticated tests that launch the pinned Codex runtime and consume usage",
+]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
