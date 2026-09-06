@@ -135,17 +135,22 @@ async def _open_thread(request: RootSessionRequest, developer_instructions: str)
     client: AsyncCodex | None = None
     phase = "startup"
     try:
-        client = AsyncCodex(config=process_config())
+        client = AsyncCodex(
+            config=process_config(
+                provider_base_url=request.provider_base_url,
+            )
+        )
         await _before_deadline(client.__aenter__(), deadline)
         phase = "runtime_version"
         server = client.metadata.serverInfo
         server_version = server.version if server is not None else None
         if runtime_release(server_version) != PINNED_CODEX_RUNTIME_VERSION:
             raise RuntimeError("Codex runtime version does not match the repository pin")
-        phase = "account"
-        account = await _before_deadline(client.account(), deadline)
-        if account.account is None:
-            raise AdapterAuthenticationError("Codex has no authenticated account")
+        if request.provider_base_url is None:
+            phase = "account"
+            account = await _before_deadline(client.account(), deadline)
+            if account.account is None:
+                raise AdapterAuthenticationError("Codex has no authenticated account")
         if request.thread_id is None:
             phase = "thread_start"
             thread = await _before_deadline(
@@ -377,6 +382,7 @@ class SdkCodexAdapter:
                 timeout_seconds=request.timeout_seconds,
                 cleanup_timeout_seconds=request.cleanup_timeout_seconds,
                 custom_system_prompt=request.custom_system_prompt,
+                provider_base_url=request.provider_base_url,
             ),
             _developer_instructions("leaf", request.custom_system_prompt),
         )

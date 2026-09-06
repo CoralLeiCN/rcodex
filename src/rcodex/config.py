@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from rcodex.codex_adapter.config import REASONING_EFFORTS
-from rcodex.models import LimitEnforcement, LimitReportItem, RunLimits
+from rcodex.models import (
+    LimitEnforcement,
+    LimitReportItem,
+    OpenAICompatibleProvider,
+    RunLimits,
+)
 
 DEFAULT_RUN_TIMEOUT_SECONDS = 900.0
 DEFAULT_CLEANUP_TIMEOUT_SECONDS = 5.0
@@ -42,6 +47,7 @@ class RunConfig:
     model: str | None = None
     sub_model: str | None = None
     allowed_models: tuple[str, ...] = ()
+    provider_base_url: str | None = None
     reasoning_effort: str = "low"
     sub_reasoning_effort: str | None = None
     run_timeout_seconds: float = DEFAULT_RUN_TIMEOUT_SECONDS
@@ -80,6 +86,7 @@ class RunConfig:
         text_fields = (
             ("model", self.model),
             ("sub_model", self.sub_model),
+            ("provider_base_url", self.provider_base_url),
             ("sub_reasoning_effort", self.sub_reasoning_effort),
             ("custom_system_prompt", self.custom_system_prompt),
             ("user_prologue", self.user_prologue),
@@ -94,6 +101,11 @@ class RunConfig:
                     raise ValueError(f"{name} must be valid UTF-8") from exc
             if value is not None and name in {"model", "sub_model"} and len(value) > 255:
                 raise ValueError(f"{name} must not exceed 255 characters")
+        if self.provider_base_url is not None:
+            if self.model is None:
+                raise ValueError("model is required when provider_base_url is configured")
+        if self.provider_base_url is not None:
+            OpenAICompatibleProvider(base_url=self.provider_base_url)
         for name, value in (
             ("custom_system_prompt", self.custom_system_prompt),
             ("user_prologue", self.user_prologue),
@@ -152,6 +164,12 @@ class RunConfig:
             if self.sub_reasoning_effort is None
             else self.sub_reasoning_effort
         )
+
+    @property
+    def provider(self) -> OpenAICompatibleProvider | None:
+        if self.provider_base_url is None:
+            return None
+        return OpenAICompatibleProvider(base_url=self.provider_base_url)
 
     def resolve_requested_model(self, requested: str | None) -> str | None:
         if requested is None:

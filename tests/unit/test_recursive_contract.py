@@ -121,6 +121,21 @@ def test_run_config_child_effort_falls_back_only_when_unset() -> None:
         RunConfig(reasoning_effort="medium", sub_reasoning_effort="")
 
 
+def test_run_config_validates_openai_compatible_provider() -> None:
+    config = RunConfig(
+        model="Qwen/Qwen3-Coder",
+        provider_base_url="http://127.0.0.1:8000/v1",
+    )
+
+    assert config.provider is not None
+    assert config.provider.base_url == "http://127.0.0.1:8000/v1"
+
+    with pytest.raises(ValueError, match="model is required"):
+        RunConfig(provider_base_url="http://127.0.0.1:8000/v1")
+    with pytest.raises(ValueError, match=r"absolute HTTP\(S\) URL"):
+        RunConfig(model="local", provider_base_url="localhost:8000/v1")
+
+
 def test_repl_iteration_round_trips_with_typed_final_payload() -> None:
     now = datetime.now(UTC)
     original = IterationRecord(

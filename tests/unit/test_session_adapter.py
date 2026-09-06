@@ -17,7 +17,7 @@ from rcodex.codex_adapter import (
     AdapterTimeoutError,
 )
 from rcodex.codex_adapter.base import RootSessionRequest
-from rcodex.codex_adapter.config import locked_down_config
+from rcodex.codex_adapter.config import locked_down_config, process_config
 from rcodex.codex_adapter.sdk import (
     SdkRootSession,
     _before_deadline,
@@ -45,6 +45,7 @@ class _FakeCodex:
         )
         self.started: list[dict[str, object]] = []
         self.resumed: list[tuple[str, dict[str, object]]] = []
+        self.account_calls = 0
         self.closed = False
         type(self).last = self
 
@@ -52,6 +53,7 @@ class _FakeCodex:
         return self
 
     async def account(self) -> object:
+        self.account_calls += 1
         return SimpleNamespace(account=object())
 
     async def thread_start(self, **kwargs: object) -> _FakeThread:
@@ -90,7 +92,46 @@ def _session_request(tmp_path: Path, **updates: Any) -> RootSessionRequest:
 
 def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("rcodex.codex_adapter.sdk.AsyncCodex", _FakeCodex)
-    monkeypatch.setattr("rcodex.codex_adapter.sdk.process_config", lambda: object())
+    monkeypatch.setattr("rcodex.codex_adapter.sdk.process_config", lambda **_kwargs: object())
+
+
+def test_process_config_registers_authenticated_openai_responses_compatible_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RCODEX_PROVIDER_API_KEY", "secret-provider-key")
+    config = process_config(
+        codex_bin=tmp_path / "codex",
+        provider_base_url="https://api.tokenfactory.nebius.com/v1",
+    )
+
+    assert config.config_overrides[-7:] == (
+        'model_provider="rcodex"',
+        'model_providers.rcodex.name="rcodex OpenAI-compatible provider"',
+        'model_providers.rcodex.base_url="https://api.tokenfactory.nebius.com/v1"',
+        'model_providers.rcodex.wire_api="responses"',
+        "model_providers.rcodex.requires_openai_auth=false",
+        'model_providers.rcodex.env_key="RCODEX_PROVIDER_API_KEY"',
+        'shell_environment_policy.exclude=["RCODEX_PROVIDER_API_KEY"]',
+    )
+
+
+def test_process_config_registers_unauthenticated_provider_without_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RCODEX_PROVIDER_API_KEY", raising=False)
+
+    config = process_config(
+        codex_bin=tmp_path / "codex",
+        provider_base_url="http://127.0.0.1:8000/v1",
+    )
+
+    assert config.config_overrides[-5:] == (
+        'model_provider="rcodex"',
+        'model_providers.rcodex.name="rcodex OpenAI-compatible provider"',
+        'model_providers.rcodex.base_url="http://127.0.0.1:8000/v1"',
+        'model_providers.rcodex.wire_api="responses"',
+        "model_providers.rcodex.requires_openai_auth=false",
+    )
 
 
 @pytest.mark.asyncio
@@ -121,7 +162,38 @@ async def test_new_session_selects_ephemeral_storage(
         "sandbox": Sandbox.read_only,
     }
     assert opened.thread.id == "thread-new"
+    assert fake.account_calls == 1
     await fake.close()
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_bypasses_codex_account_authentication(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    process_arguments: dict[str, object] = {}
+    monkeypatch.setattr("rcodex.codex_adapter.sdk.AsyncCodex", _FakeCodex)
+
+    def fake_process_config(**kwargs: object) -> object:
+        process_arguments.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("rcodex.codex_adapter.sdk.process_config", fake_process_config)
+
+    opened = await _open_thread(
+        _session_request(
+            tmp_path,
+            provider_base_url="https://api.tokenfactory.nebius.com/v1",
+        ),
+        "locked developer instructions",
+    )
+
+    fake = _FakeCodex.last
+    assert fake is not None
+    assert fake.account_calls == 0
+    assert process_arguments == {
+        "provider_base_url": "https://api.tokenfactory.nebius.com/v1",
+    }
+    await opened.client.close()
 
 
 @pytest.mark.asyncio
@@ -163,7 +235,7 @@ async def test_startup_cleanup_failure_is_not_hidden(
         "rcodex.codex_adapter.sdk.AsyncCodex",
         _StartupAndCleanupFailureCodex,
     )
-    monkeypatch.setattr("rcodex.codex_adapter.sdk.process_config", lambda: object())
+    monkeypatch.setattr("rcodex.codex_adapter.sdk.process_config", lambda **_kwargs: object())
 
     with pytest.raises(AdapterCleanupError) as captured:
         await _open_thread(_session_request(tmp_path), "locked developer instructions")

@@ -67,9 +67,26 @@ intentional Codex-native adaptations.
 
 rcodex resolves `codex` from `PATH`, or from the executable path in `RCODEX_CODEX_BIN`. It does
 not select the SDK's packaged 0.147.0 fallback. After SDK startup, rcodex reads App Server
-metadata and fails unless the reported runtime release is 0.151.0. The SDK owns authentication;
-rcodex fails startup when no authenticated account is available and does not implement a
-credential store.
+metadata and fails unless the reported runtime release is 0.151.0.
+
+By default, the SDK owns authentication; rcodex fails startup when no authenticated Codex account
+is available and does not implement a credential store. When `provider_base_url` is configured,
+rcodex instead registers one process-local `rcodex` model provider with `wire_api="responses"`,
+`requires_openai_auth=false`, and the configured base URL. `RCODEX_PROVIDER_API_KEY` optionally
+contains its bearer token and is excluded from environments created for Codex shell commands.
+The token is not accepted as runtime configuration and is not persisted by rcodex.
+External-provider runs do not require or query the Codex account.
+
+The custom endpoint must provide the OpenAI Responses API, including streaming, function tools,
+and structured JSON output used by Codex. Chat Completions-only endpoints are unsupported. An
+explicit model is required with a custom provider. The base URL must be an absolute HTTP(S) URL
+without credentials, query, fragment, or whitespace; plain HTTP permits localhost endpoints.
+
+At CLI startup, rcodex loads `.env` from the working directory without overriding inherited
+environment variables. `RCODEX_MODEL`, `RCODEX_SUB_MODEL`, `RCODEX_PROVIDER_BASE_URL`, and
+`RCODEX_PROVIDER_API_KEY` configure the model and provider. The provider key is optional; when it
+is absent the custom endpoint is used without authentication. Explicit CLI options override the
+model and base-URL defaults.
 
 Each opened thread requests:
 
@@ -278,6 +295,9 @@ The root uses `model` and `reasoning_effort`. Children default to `sub_model` an
 only when it is admitted by `allowed_models`; configured root/sub models must themselves belong
 to a non-empty allowlist. The allowlist accepts at most 64 unique non-blank names. Query functions
 do not expose a per-call reasoning-effort parameter.
+
+One configured OpenAI-compatible provider applies to the root and every child. It is represented
+in `request.json` and runtime metadata by its base URL; the key value is never recorded.
 
 `custom_system_prompt` is installed as SDK developer guidance when a leaf or retained recursive
 thread is opened. rcodex's own developer instructions remain authoritative: read-only operation,
@@ -632,10 +652,10 @@ uv run rcodex run \
 ```
 
 CLI options expose root/sub models and reasoning, a repeatable model allowlist, all single-run
-limits,
-persistence/session ID, compaction and threshold, orchestration guidance, root/system/prologue
-prompts, include/exclude patterns, verbosity, state path, and output path. Durations accept bare
-seconds or `s`, `m`, and `h` suffixes and may not exceed 24 hours.
+limits, an OpenAI-compatible provider base URL, persistence/session ID, compaction and threshold,
+orchestration guidance, root/system/prologue prompts, include/exclude patterns, verbosity, state
+path, and output path. Durations accept bare seconds or `s`, `m`, and `h` suffixes and may not
+exceed 24 hours.
 
 Omitting `--state-dir` uses the context-keyed sibling state path from section 4.1.
 

@@ -50,6 +50,55 @@ uv run rcodex run \
   --strategy direct
 ```
 
+Use a Nebius Token Factory model through its OpenAI-compatible Responses endpoint. The optional
+key is read from the fixed `RCODEX_PROVIDER_API_KEY` environment variable and is never stored in
+run artifacts:
+
+```bash
+export RCODEX_PROVIDER_API_KEY="your-key"
+
+uv run rcodex run \
+  --task "Summarize the architecture with evidence" \
+  --context . \
+  --model "your-nebius-model-id" \
+  --provider-base-url "https://api.tokenfactory.nebius.com/v1"
+```
+
+The CLI automatically loads `.env` from its working directory without replacing variables that
+are already present in the process environment. The model and provider can therefore be stored as:
+
+```dotenv
+RCODEX_MODEL=your-nebius-model-id
+RCODEX_PROVIDER_BASE_URL=https://api.tokenfactory.nebius.com/v1
+RCODEX_PROVIDER_API_KEY=your-key
+```
+
+Then the equivalent command needs no provider flags:
+
+```bash
+uv run rcodex run \
+  --task "Summarize the architecture with evidence" \
+  --context .
+```
+
+`RCODEX_SUB_MODEL` optionally sets the default child model. Explicit CLI options take precedence
+over values loaded from `.env`. Keep `.env` out of version control because it can contain the
+provider credential.
+
+For an unauthenticated local server, leave `RCODEX_PROVIDER_API_KEY` unset:
+
+```bash
+uv run rcodex run \
+  --task "Summarize the architecture with evidence" \
+  --context . \
+  --model "served-model-name" \
+  --provider-base-url "http://127.0.0.1:8000/v1"
+```
+
+The endpoint must implement the OpenAI Responses API at `/v1/responses`, including streaming,
+function tools, and structured JSON output used by Codex. A server that only implements
+`/v1/chat/completions` is not compatible.
+
 Start a persistent recursive session, then resume it with the ID printed to stderr:
 
 ```bash
