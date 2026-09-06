@@ -13,12 +13,12 @@ the final answer. Strict JSON remains the internal RPC/artifact/result boundary;
 root Codex programming language.
 
 Implementation baseline: Python 3.11+, `openai-codex==0.147.0`, `AsyncCodex`, and an external
-Codex 0.151.0 executable selected through the SDK's supported `codex_bin` configuration.
+Codex 0.153.4 executable selected through the SDK's supported `codex_bin` configuration.
 
 ## Setup
 
 ```bash
-codex --version  # must report codex-cli 0.151.0
+codex --version  # must report codex-cli 0.153.4
 uv sync --locked
 uv run pytest     # offline suite; live tests are excluded by default
 ```

@@ -12,7 +12,7 @@ from openai_codex import CodexConfig
 from openai_codex.types import ReasoningEffort
 
 REASONING_EFFORTS = tuple(effort.value for effort in ReasoningEffort)
-PINNED_CODEX_RUNTIME_VERSION = "0.151.0"
+PINNED_CODEX_RUNTIME_VERSION = "0.153.4"
 CODEX_BIN_ENV = "RCODEX_CODEX_BIN"
 PROVIDER_API_KEY_ENV = "RCODEX_PROVIDER_API_KEY"
 OPENAI_COMPATIBLE_PROVIDER_ID = "rcodex"

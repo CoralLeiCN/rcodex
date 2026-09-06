@@ -57,7 +57,7 @@ intentional Codex-native adaptations.
 | --- | --- |
 | Language | Python 3.11+ |
 | Codex SDK | Exactly `openai-codex==0.147.0`, using `AsyncCodex` |
-| Codex runtime | External Codex CLI/App Server 0.151.0 selected with `CodexConfig.codex_bin` |
+| Codex runtime | External Codex CLI/App Server 0.153.4 selected with `CodexConfig.codex_bin` |
 | Concurrency | Standard-library `asyncio`, tasks, semaphores, and monotonic deadlines |
 | Validation | Pydantic v2 strict models with unknown fields rejected |
 | CLI | Standard-library `argparse` |
@@ -67,7 +67,7 @@ intentional Codex-native adaptations.
 
 rcodex resolves `codex` from `PATH`, or from the executable path in `RCODEX_CODEX_BIN`. It does
 not select the SDK's packaged 0.147.0 fallback. After SDK startup, rcodex reads App Server
-metadata and fails unless the reported runtime release is 0.151.0.
+metadata and fails unless the reported runtime release is 0.153.4.
 
 By default, the SDK owns authentication; rcodex fails startup when no authenticated Codex account
 is available and does not implement a credential store. When `provider_base_url` is configured,
