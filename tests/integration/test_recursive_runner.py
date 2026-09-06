@@ -75,7 +75,7 @@ class _FakeSession:
 
     @property
     def codex_runtime_version(self) -> str:
-        return "0.151.0-test"
+        return "0.153.4-test"
 
     async def turn(self, request: RootTurnRequest) -> DirectTurn:
         self.turn_requests.append(request)
@@ -157,7 +157,7 @@ class _FakeAdapter:
             thread_id=f"thread-leaf-{len(self.leaf_requests)}",
             final_response=step.response,
             usage=step.usage or RunUsage(available=False),
-            codex_runtime_version="0.151.0-test",
+            codex_runtime_version="0.153.4-test",
         )
         self.completed_turns.append(turn)
         return turn
@@ -180,7 +180,7 @@ class _RoutingDirectAdapter:
             thread_id=f"thread-{request.node_id}",
             final_response=response,
             usage=RunUsage(available=False),
-            codex_runtime_version="0.151.0-test",
+            codex_runtime_version="0.153.4-test",
         )
 
 

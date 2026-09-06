@@ -41,7 +41,7 @@ class _FakeCodex:
     def __init__(self, *, config: object) -> None:
         self.config = config
         self.metadata = SimpleNamespace(
-            serverInfo=SimpleNamespace(version="0.151.0 (test; arm64) adapter")
+            serverInfo=SimpleNamespace(version="0.153.4 (test; arm64) adapter")
         )
         self.started: list[dict[str, object]] = []
         self.resumed: list[tuple[str, dict[str, object]]] = []
@@ -298,7 +298,7 @@ def _root_session(thread: _CompactThread) -> SdkRootSession:
         _OpenedThread(
             client=cast(AsyncCodex, _CompactClient()),
             thread=cast(AsyncThread, thread),
-            codex_runtime_version="0.151.0",
+            codex_runtime_version="0.153.4",
         ),
         reasoning_effort="low",
     )

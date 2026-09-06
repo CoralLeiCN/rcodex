@@ -1,0 +1,25 @@
+version = 1
+name = "rcodex"
+
+[setup]
+script = "uv sync --locked --group dev"
+
+[[actions]]
+name = "Test"
+icon = "test"
+command = "uv run --locked pytest"
+
+[[actions]]
+name = "Lint"
+icon = "terminal"
+command = "uv run --locked ruff check ."
+
+[[actions]]
+name = "Check formatting"
+icon = "terminal"
+command = "uv run --locked ruff format --check ."
+
+[[actions]]
+name = "Type check"
+icon = "terminal"
+command = "uv run --locked mypy"
