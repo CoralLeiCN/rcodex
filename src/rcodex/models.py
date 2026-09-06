@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -228,6 +229,28 @@ class RequestedCapabilities(StrictModel):
     mcp_requested_disabled: Literal[True] = True
 
 
+class OpenAICompatibleProvider(StrictModel):
+    base_url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        if not value.strip() or any(character.isspace() for character in value):
+            raise ValueError("provider base URL must not be blank or contain whitespace")
+        try:
+            parsed = urlsplit(value)
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("provider base URL must be a valid HTTP(S) URL") from exc
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            raise ValueError("provider base URL must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("provider base URL must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("provider base URL must not contain a query or fragment")
+        return value
+
+
 class RuntimeMetadata(StrictModel):
     rcodex_version: str = Field(min_length=1, max_length=255)
     python_version: str = Field(min_length=1, max_length=255)
@@ -236,6 +259,7 @@ class RuntimeMetadata(StrictModel):
     codex_runtime_version: str | None = Field(default=None, min_length=1, max_length=255)
     root_model: str | None = Field(default=None, min_length=1, max_length=255)
     sub_model: str | None = Field(default=None, min_length=1, max_length=255)
+    provider: OpenAICompatibleProvider | None = None
     reasoning_effort: str = Field(min_length=1, max_length=32)
     sub_reasoning_effort: str = Field(min_length=1, max_length=32)
     prompt_template_version: str = Field(min_length=1, max_length=255)
@@ -275,6 +299,7 @@ class RunRequest(StrictModel):
     allowed_models: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
         default_factory=list, max_length=64
     )
+    provider: OpenAICompatibleProvider | None = None
     reasoning_effort: str
     sub_reasoning_effort: str
     persistent: bool

@@ -690,6 +690,7 @@ class RecursiveRunner:
             model=config.model,
             sub_model=config.resolved_sub_model,
             allowed_models=list(config.allowed_models),
+            provider=config.provider,
             reasoning_effort=config.reasoning_effort,
             sub_reasoning_effort=config.resolved_sub_reasoning_effort,
             persistent=config.persistent,
@@ -734,6 +735,7 @@ class RecursiveRunner:
                 openai_codex_version=OPENAI_CODEX_VERSION,
                 root_model=config.model,
                 sub_model=config.resolved_sub_model,
+                provider=config.provider,
                 reasoning_effort=config.reasoning_effort,
                 sub_reasoning_effort=config.resolved_sub_reasoning_effort,
                 prompt_template_version=PROMPT_VERSION,
@@ -937,6 +939,7 @@ class RecursiveRunner:
                         cleanup_timeout_seconds=state.config.cleanup_timeout_seconds,
                         node_id=node.node_id,
                         custom_system_prompt=state.config.custom_system_prompt,
+                        provider_base_url=state.config.provider_base_url,
                     )
                 )
             self._record_turn(state, node, turn)
@@ -1016,6 +1019,7 @@ class RecursiveRunner:
                         persistent=root_persistent,
                         thread_id=resume_id,
                         custom_system_prompt=state.config.custom_system_prompt,
+                        provider_base_url=state.config.provider_base_url,
                     )
                 )
             node.thread_id = session.thread_id

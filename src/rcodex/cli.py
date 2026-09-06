@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from rcodex.codex_adapter.config import REASONING_EFFORTS
 from rcodex.config import (
@@ -70,6 +73,12 @@ def _ratio(value: str) -> float:
     return parsed
 
 
+def _load_cli_environment() -> None:
+    """Load CLI defaults and provider credentials from the working directory."""
+
+    load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rcodex")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -82,13 +91,29 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(strategy.value for strategy in RunStrategy),
         default=RunStrategy.recursive.value,
     )
-    run.add_argument("--model", help="root Codex model; omit for the SDK default")
-    run.add_argument("--sub-model", help="default child model; defaults to --model")
+    run.add_argument(
+        "--model",
+        default=os.environ.get("RCODEX_MODEL"),
+        help="root Codex model; defaults to RCODEX_MODEL or the SDK default",
+    )
+    run.add_argument(
+        "--sub-model",
+        default=os.environ.get("RCODEX_SUB_MODEL"),
+        help="default child model; defaults to RCODEX_SUB_MODEL or --model",
+    )
     run.add_argument(
         "--allow-model",
         action="append",
         default=[],
         help="repeatable per-call model allowlist",
+    )
+    run.add_argument(
+        "--provider-base-url",
+        default=os.environ.get("RCODEX_PROVIDER_BASE_URL"),
+        help=(
+            "OpenAI Responses-compatible API base URL; defaults to "
+            "RCODEX_PROVIDER_BASE_URL"
+        ),
     )
     run.add_argument(
         "--reasoning-effort",
@@ -194,6 +219,7 @@ async def _run(args: argparse.Namespace) -> int:
             model=args.model,
             sub_model=args.sub_model,
             allowed_models=tuple(args.allow_model),
+            provider_base_url=args.provider_base_url,
             reasoning_effort=args.reasoning_effort,
             sub_reasoning_effort=args.sub_reasoning_effort,
             run_timeout_seconds=args.timeout,
@@ -274,6 +300,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _load_cli_environment()
     args = build_parser().parse_args(argv)
     try:
         if args.command == "run":

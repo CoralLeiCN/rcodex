@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -13,6 +14,8 @@ from openai_codex.types import ReasoningEffort
 REASONING_EFFORTS = tuple(effort.value for effort in ReasoningEffort)
 PINNED_CODEX_RUNTIME_VERSION = "0.151.0"
 CODEX_BIN_ENV = "RCODEX_CODEX_BIN"
+PROVIDER_API_KEY_ENV = "RCODEX_PROVIDER_API_KEY"
+OPENAI_COMPATIBLE_PROVIDER_ID = "rcodex"
 
 
 def codex_runtime_path() -> Path:
@@ -56,17 +59,42 @@ def locked_down_config() -> dict[str, Any]:
     }
 
 
-def process_config(*, codex_bin: Path | None = None) -> CodexConfig:
+def process_config(
+    *,
+    codex_bin: Path | None = None,
+    provider_base_url: str | None = None,
+) -> CodexConfig:
     """Return the process-level equivalent of the per-thread lockdown request."""
+
+    overrides = [
+        "agents.enabled=false",
+        "apps._default.enabled=false",
+        "mcp_servers={}",
+        "tool_suggest.discoverables=[]",
+        "tools.web_search=false",
+        'web_search="disabled"',
+    ]
+    if provider_base_url is not None:
+        provider = f"model_providers.{OPENAI_COMPATIBLE_PROVIDER_ID}"
+        overrides.extend(
+            (
+                f'model_provider="{OPENAI_COMPATIBLE_PROVIDER_ID}"',
+                f'{provider}.name="rcodex OpenAI-compatible provider"',
+                f"{provider}.base_url={json.dumps(provider_base_url, ensure_ascii=False)}",
+                f'{provider}.wire_api="responses"',
+                f"{provider}.requires_openai_auth=false",
+            )
+        )
+        if os.environ.get(PROVIDER_API_KEY_ENV):
+            overrides.append(
+                f"{provider}.env_key={json.dumps(PROVIDER_API_KEY_ENV, ensure_ascii=False)}"
+            )
+            overrides.append(
+                "shell_environment_policy.exclude="
+                f"{json.dumps([PROVIDER_API_KEY_ENV], ensure_ascii=False)}"
+            )
 
     return CodexConfig(
         codex_bin=str(codex_bin or codex_runtime_path()),
-        config_overrides=(
-            "agents.enabled=false",
-            "apps._default.enabled=false",
-            "mcp_servers={}",
-            "tool_suggest.discoverables=[]",
-            "tools.web_search=false",
-            'web_search="disabled"',
-        ),
+        config_overrides=tuple(overrides),
     )

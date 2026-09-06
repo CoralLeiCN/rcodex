@@ -58,6 +58,7 @@ class DirectTurnRequest:
     cleanup_timeout_seconds: float
     node_id: str | None = None
     custom_system_prompt: str | None = None
+    provider_base_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ class RootSessionRequest:
     persistent: bool = False
     thread_id: str | None = None
     custom_system_prompt: str | None = None
+    provider_base_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

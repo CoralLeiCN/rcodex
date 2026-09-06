@@ -1246,6 +1246,54 @@ async def test_custom_system_prompt_is_forwarded_as_developer_guidance_only(
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_provider_is_forwarded_and_recorded_without_its_key(
+    context_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RCODEX_PROVIDER_API_KEY", "secret-provider-key")
+    adapter = _FakeAdapter(leaf_steps=[_Step(response=_final_payload("provider result"))])
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="provider",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(
+            model="Qwen/Qwen3-Coder",
+            provider_base_url="https://api.tokenfactory.nebius.com/v1",
+        ),
+        strategy=RunStrategy.direct,
+    )
+
+    request = adapter.leaf_requests[0]
+    assert request.provider_base_url == "https://api.tokenfactory.nebius.com/v1"
+    assert result.runtime.provider is not None
+    persisted_text = _read_text(result.artifacts.request)
+    persisted = RunRequest.model_validate_json(persisted_text, strict=True)
+    assert persisted.provider == result.runtime.provider
+    assert "secret-provider-key" not in persisted_text
+
+
+@pytest.mark.asyncio
+async def test_provider_without_api_key_uses_unauthenticated_endpoint(
+    context_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RCODEX_PROVIDER_API_KEY", raising=False)
+    adapter = _FakeAdapter(leaf_steps=[_Step(response=_final_payload("local result"))])
+
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="provider",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(
+            model="local",
+            provider_base_url="http://127.0.0.1:8000/v1",
+        ),
+        strategy=RunStrategy.direct,
+    )
+
+    assert result.status == RunStatus.succeeded
+    assert adapter.leaf_requests[0].provider_base_url == "http://127.0.0.1:8000/v1"
+
+
+@pytest.mark.asyncio
 async def test_local_leaf_capacity_timeout_is_a_call_result_parent_can_recover_from(
     context_root: Path, tmp_path: Path
 ) -> None:
