@@ -372,7 +372,8 @@ class IterationRecord(StrictModel):
     duration_ms: int = Field(ge=0)
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     executions: list[ReplExecutionRecord] = Field(default_factory=list, max_length=32)
-    results: list[CallResult] = Field(default_factory=list, max_length=32)
+    # Admission limits bound executed calls, but every rejected attempt is also recorded.
+    results: list[CallResult] = Field(default_factory=list)
     error: RunError | None = None
     usage: RunUsage
     compaction_completed: bool = False

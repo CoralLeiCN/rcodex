@@ -63,6 +63,7 @@ def process_config(
     *,
     codex_bin: Path | None = None,
     provider_base_url: str | None = None,
+    codex_home: Path | None = None,
 ) -> CodexConfig:
     """Return the process-level equivalent of the per-thread lockdown request."""
 
@@ -97,4 +98,5 @@ def process_config(
     return CodexConfig(
         codex_bin=str(codex_bin or codex_runtime_path()),
         config_overrides=tuple(overrides),
+        env={"CODEX_HOME": str(codex_home)} if codex_home is not None else None,
     )

@@ -19,6 +19,8 @@ from rcodex.codex_adapter import (
 from rcodex.codex_adapter.base import RootSessionRequest
 from rcodex.codex_adapter.config import locked_down_config, process_config
 from rcodex.codex_adapter.sdk import (
+    REPL_BASE_INSTRUCTIONS,
+    SdkCodexAdapter,
     SdkRootSession,
     _before_deadline,
     _developer_instructions,
@@ -115,6 +117,30 @@ def test_process_config_registers_authenticated_openai_responses_compatible_prov
     )
 
 
+def test_process_config_isolates_codex_home_without_mutating_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    monkeypatch.setenv("CODEX_HOME", "/ambient")
+    config = process_config(codex_bin=tmp_path / "codex", codex_home=tmp_path / "isolated")
+    assert config.env == {"CODEX_HOME": str(tmp_path / "isolated")}
+    assert os.environ["CODEX_HOME"] == "/ambient"
+
+
+@pytest.mark.asyncio
+async def test_recursive_root_installs_repl_base_instructions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_sdk(monkeypatch)
+    session = await SdkCodexAdapter().start_root(_session_request(tmp_path))
+    fake = _FakeCodex.last
+    assert fake is not None
+    assert fake.started[0]["base_instructions"] == REPL_BASE_INSTRUCTIONS
+    assert fake.started[0]["sandbox"] == Sandbox.read_only
+    await session.close(timeout_seconds=1)
+
+
 def test_process_config_registers_unauthenticated_provider_without_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -154,6 +180,7 @@ async def test_new_session_selects_ephemeral_storage(
     assert len(fake.started) == 1
     assert fake.started[0] == {
         "approval_mode": ApprovalMode.deny_all,
+        "base_instructions": None,
         "config": locked_down_config(),
         "cwd": str(tmp_path),
         "developer_instructions": "locked developer instructions",
@@ -192,6 +219,7 @@ async def test_openai_compatible_provider_bypasses_codex_account_authentication(
     assert fake.account_calls == 0
     assert process_arguments == {
         "provider_base_url": "https://api.tokenfactory.nebius.com/v1",
+        "codex_home": None,
     }
     await opened.client.close()
 
@@ -215,6 +243,7 @@ async def test_resume_reasserts_all_session_restrictions(
             "thread-existing",
             {
                 "approval_mode": ApprovalMode.deny_all,
+                "base_instructions": None,
                 "config": locked_down_config(),
                 "cwd": str(tmp_path),
                 "developer_instructions": "locked developer instructions",

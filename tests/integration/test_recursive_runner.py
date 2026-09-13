@@ -1127,6 +1127,31 @@ async def test_observed_token_limit_produces_token_limit_result(
 
 
 @pytest.mark.asyncio
+async def test_many_rejected_calls_do_not_overflow_iteration_artifact(
+    context_root: Path, tmp_path: Path
+) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(response="```repl\nfor i in range(48):\n    print(constant())\n```"),
+                _Step(response='```repl\nsubmit_answer("Handled call limit")\n```'),
+            ]
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter, custom_tools={"constant": 7}).run(
+        task="Handle repeated rejected calls",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_calls_per_iteration=2),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.nodes[0].calls == 2
+    iteration = _iteration(result, "node_000001", 0)
+    assert len(iteration["results"]) == 48
+    assert sum(call["status"] == CallStatus.rejected for call in iteration["results"]) == 46
+
+
+@pytest.mark.asyncio
 async def test_invalid_repl_response_reaches_consecutive_error_limit(
     context_root: Path, tmp_path: Path
 ) -> None:

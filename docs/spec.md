@@ -300,10 +300,13 @@ One configured OpenAI-compatible provider applies to the root and every child. I
 in `request.json` and runtime metadata by its base URL; the key value is never recorded.
 
 `custom_system_prompt` is installed as SDK developer guidance when a leaf or retained recursive
-thread is opened. rcodex's own developer instructions remain authoritative: read-only operation,
+thread is opened. Recursive roots replace Codex's default base instructions with rcodex's REPL
+programming instructions: controller functions are called in returned Python, never as native
+API tool calls. rcodex's own developer instructions remain authoritative: read-only local operation,
 untrusted context, leaf schema-only output, recursive fenced-REPL output, controller-mediated
 queries, and the web, connector, MCP, escalation, and built-in-agent restrictions cannot be relaxed or overridden by caller
 guidance. `user_prologue` is instead encoded as ordinary prompt data for every node.
+Trusted controller tools may act on external environments under their declared caller authority.
 `custom_system_prompt` and `user_prologue` must be non-blank and each fits both a 16,384-character
 and 65,536-byte UTF-8 bound. `root_prompt` is ordinary root-only prompt data.
 `orchestrator=False` tells the node not to query children and rejects any query function calls;
@@ -498,6 +501,10 @@ rejected. Results must also fit `max_tool_result_bytes`. Unknown tools, invalid 
 serialization failures, and handler failures are normalized into failed call results and safe
 error strings. Successful values return directly to the running Python block and are also
 included in iteration artifacts.
+
+Iteration artifacts retain rejected call attempts as well as admitted calls. The admission
+limit applies to execution; repeated rejected attempts must not overflow artifact validation
+or prevent the next model turn from receiving feedback.
 
 These handlers are trusted host code executed inside the rcodex process. They are not sandboxed,
 are not MCP, and may have the full authority of the caller. CLI runs cannot register tools.
