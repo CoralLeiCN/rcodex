@@ -1,0 +1,42 @@
+[project]
+name = "rcodex-harbor-benchmarks"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = [
+  "harbor==0.22.0",
+  "recursive-codex",
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18,<2",
+  "pytest>=8.4,<10",
+  "pytest-asyncio>=1.2,<2",
+  "ruff>=0.13,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+recursive-codex = { path = "../..", editable = true }
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["benchmarks"]
+plugins = ["pydantic.mypy"]
+mypy_path = "$MYPY_CONFIG_FILE_DIR/../../src"
+
+[[tool.mypy.overrides]]
+module = ["harbor.*"]
+follow_untyped_imports = true

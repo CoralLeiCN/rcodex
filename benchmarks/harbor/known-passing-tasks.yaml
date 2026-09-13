@@ -1,0 +1,34 @@
+# Previously verified tasks; see results/known-passing-tasks.md for outcomes and tokens.
+# One fresh container per task/agent, sequentially, with a 30-minute agent deadline.
+# Both agents read RCODEX_PROVIDER_BASE_URL from the environment or root .env.
+n_attempts: 1
+n_concurrent_trials: 1
+retry:
+  max_retries: 0
+environment:
+  type: docker
+  delete: true
+agents:
+  - import_path: benchmarks.harbor.baseline:CodexBaselineAgent
+    model_name: qwen3.8-27b-fp8
+    override_timeout_sec: 1800
+    kwargs:
+      provider_gateway_host: host.docker.internal
+      reasoning_effort: low
+  - import_path: benchmarks.harbor.agents:RcodexAgent
+    model_name: qwen3.8-27b-fp8
+    override_timeout_sec: 1800
+    kwargs:
+      reasoning_effort: low
+      max_depth: 1
+      max_concurrency: 1
+      max_iterations: 12
+      max_tokens: 200000
+      run_timeout_seconds: 1800
+datasets:
+  - name: terminal-bench/terminal-bench-2-1
+    ref: sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
+    task_names:
+      - terminal-bench/nginx-request-logging
+      - terminal-bench/openssl-selfsigned-cert
+      - terminal-bench/log-summary-date-ranges

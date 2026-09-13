@@ -30,6 +30,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/rcodex"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/benchmarks"]
+
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib -m 'not live'"
 asyncio_mode = "auto"

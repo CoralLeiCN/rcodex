@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local Harbor development results, trials, and caches
+/benchmarks/harbor/results/
+jobs/
+.harbor/
