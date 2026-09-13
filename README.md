@@ -123,6 +123,15 @@ owner-only (`0700`) and state files owner-readable/writable (`0600`). Every exis
 directory, including an explicitly selected one, must already deny group and other access;
 rcodex rejects an insecure directory rather than changing its permissions.
 
+## Development benchmarks
+
+The optional [Harbor harness](benchmarks/harbor/README.md) compares rcodex and native Codex
+on one Terminal-Bench 2.1 task using the local model settings in `.env`. With Docker running,
+use `make bench-setup` then `make bench`. The harness has its own dependencies, lockfile,
+and Python 3.12+ environment; it is excluded from core distributions and does not affect
+core's Python 3.11+ support. See the guide for single-agent runs, limits, and checks.
+Local result notes live in the Git-ignored `benchmarks/harbor/results/` directory.
+
 ## Python API
 
 ```python

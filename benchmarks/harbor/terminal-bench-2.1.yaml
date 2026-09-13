@@ -1,0 +1,20 @@
+# Development comparison: one task, one attempt per agent, sequentially, no retries.
+n_attempts: 1
+n_concurrent_trials: 1
+# This task allows 900 seconds by default; double agent time for development only.
+agent_timeout_multiplier: 2.0
+retry:
+  max_retries: 0
+environment:
+  type: docker
+agents:
+  - import_path: benchmarks.harbor.baseline:CodexBaselineAgent
+    kwargs:
+      # Docker Desktop cannot reach the LAN API directly on this development host.
+      provider_gateway_host: host.docker.internal
+  # Development limits live in the adapter defaults; override with Harbor's --ak.
+  - import_path: benchmarks.harbor.agents:RcodexAgent
+datasets:
+  - name: terminal-bench/terminal-bench-2-1
+    task_names:
+      - terminal-bench/openssl-selfsigned-cert
