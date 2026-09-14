@@ -132,6 +132,10 @@ and Python 3.12+ environment; it is excluded from core distributions and does no
 core's Python 3.11+ support. See the guide for single-agent runs, limits, and checks.
 Local result notes live in the Git-ignored `benchmarks/harbor/results/` directory.
 
+The optional [SkillsBench harness](benchmarks/skillsbench/README.md) uses BenchFlow and a
+separate Makefile: `make -f benchmarks/skillsbench/Makefile bench`. Its dependencies,
+task selection, and ignored local reports are independent of Harbor.
+
 ## Python API
 
 ```python
@@ -173,6 +177,8 @@ unsupported on macOS.
 
 ## Documentation
 
+- [SkillsBench development setup](benchmarks/skillsbench/README.md) — compare rcodex and the
+  Codex baseline on one task using a local Responses API, or explicitly run the full benchmark.
 - [Implemented specification](docs/spec.md) — the single authoritative runtime, protocol, API,
   limits, persistence, artifacts, and security contract.
 - [RLM, rcodex, and Codex comparison](docs/rlm-rcodex-codex-comparison.md) — how roots, leaves,

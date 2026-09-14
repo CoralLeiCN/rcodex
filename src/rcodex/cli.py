@@ -110,10 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--provider-base-url",
         default=os.environ.get("RCODEX_PROVIDER_BASE_URL"),
-        help=(
-            "OpenAI Responses-compatible API base URL; defaults to "
-            "RCODEX_PROVIDER_BASE_URL"
-        ),
+        help=("OpenAI Responses-compatible API base URL; defaults to RCODEX_PROVIDER_BASE_URL"),
     )
     run.add_argument(
         "--reasoning-effort",

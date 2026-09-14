@@ -221,3 +221,8 @@ __marimo__/
 /benchmarks/harbor/results/
 jobs/
 .harbor/
+
+# Downloaded SkillsBench tasks and local evaluation artifacts
+benchmarks/skillsbench/upstream/
+benchmarks/skillsbench/jobs/
+benchmarks/skillsbench/reports/

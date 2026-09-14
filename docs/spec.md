@@ -508,6 +508,10 @@ or prevent the next model turn from receiving feedback.
 
 These handlers are trusted host code executed inside the rcodex process. They are not sandboxed,
 are not MCP, and may have the full authority of the caller. CLI runs cannot register tools.
+The recursive prompt distinguishes built-in Codex tools (read-only) from controller tools,
+which follow their caller-defined policy. The opt-in [SkillsBench integration](
+../benchmarks/skillsbench/README.md) places the controller inside a task container and registers
+a shell tool there for task deliverables; this does not change the ordinary CLI sandbox.
 
 ### 8.2 Callbacks
 

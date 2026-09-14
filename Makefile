@@ -59,5 +59,5 @@ bench-test:
 	$(BENCH_RUN) python -m pytest -c benchmarks/harbor/pyproject.toml benchmarks/harbor/tests
 
 bench-check:
-	$(BENCH_RUN) ruff check benchmarks
+	$(BENCH_RUN) ruff check benchmarks/harbor
 	$(BENCH_RUN) mypy --config-file benchmarks/harbor/pyproject.toml
