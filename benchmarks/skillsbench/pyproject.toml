@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rcodex-skillsbench-dev"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = ["benchflow==0.7.6", "agent-client-protocol==0.12.1"]
+
+[project.entry-points."benchflow.agents"]
+rcodex = "skillsbench_agents:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["skillsbench_agents"]
+
+[dependency-groups]
+dev = ["recursive-codex", "pytest>=8.4,<10", "pytest-asyncio>=1.2,<2", "mypy>=1.18,<2"]
+
+[tool.uv.sources]
+recursive-codex = { path = "../..", editable = true }
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
+pythonpath = [".", "../../src"]
+testpaths = ["tests"]
+norecursedirs = ["upstream", "jobs", ".venv"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["$MYPY_CONFIG_FILE_DIR", "$MYPY_CONFIG_FILE_DIR/../../src"]
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["benchflow.*"]
+follow_imports = "skip"

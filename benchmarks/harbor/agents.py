@@ -29,9 +29,7 @@ from rcodex.tools import ToolSpec
 MAX_OUTPUT_CHARS = 12_000
 
 
-def _local_model_settings(
-    model_name: str | None, provider_base_url: str | None
-) -> tuple[str, str]:
+def _local_model_settings(model_name: str | None, provider_base_url: str | None) -> tuple[str, str]:
     load_dotenv(Path.cwd() / ".env", override=False)
     model_name = model_name or os.environ.get("RCODEX_MODEL")
     provider_base_url = provider_base_url or os.environ.get("RCODEX_PROVIDER_BASE_URL")
@@ -178,7 +176,7 @@ class RcodexAgent(BaseAgent):
                     handler=terminal.__call__,
                     input_model=TerminalInput,
                 )
-            }
+            },
         )
         result: RunResult | None = None
         try:
