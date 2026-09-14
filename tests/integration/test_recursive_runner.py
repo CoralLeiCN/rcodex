@@ -39,6 +39,7 @@ from rcodex.models import (
     TokenUsageBreakdown,
 )
 from rcodex.prompts import prompt_sha256
+from rcodex.repl_context import ContextAccessError, ContextReader
 from rcodex.runner import RecursiveRunner
 from rcodex.storage import read_session, session_path
 
@@ -423,6 +424,182 @@ async def test_direct_success_uses_one_terminal_leaf(context_root: Path, tmp_pat
     assert adapter.start_requests == []
     persisted = RunResult.model_validate_json(_read_bytes(result.artifacts.result), strict=True)
     assert persisted == result
+
+
+@pytest.mark.asyncio
+async def test_root_computes_over_corpus_and_queries_without_source_in_root_messages(
+    context_root: Path, tmp_path: Path
+) -> None:
+    text = "entry-value 7\n" + "αβ🙂" * 30_000
+    (context_root / "notes.txt").write_text(text, encoding="utf-8")
+    program = """```repl
+entry = next(context.files())
+total = 0
+for part in context.chunks(entry["id"], max_bytes=1024):
+    total += len(part["text"])
+head = context.read(entry["id"], max_bytes=14)
+selected = head["text"].splitlines()[0].upper()
+reply = llm_query("Extract the integer: " + selected)
+print("processed")
+```"""
+    finish = """```repl
+submit_answer(str(total) + ":" + str(int(reply) + 1), evidence=[{
+    "context_entry_id": head["context_entry_id"], "path": head["path"],
+    "line_start": 1, "line_end": 1, "description": "Source integer"
+}])
+```"""
+    adapter = _FakeAdapter(
+        root_scripts=[[_Step(response=program), _Step(response=finish)]],
+        leaf_steps=[_Step(response=_final_payload("7"))],
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Count characters and increment the input integer",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_calls_per_node=1, run_timeout_seconds=10, node_timeout_seconds=8),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None and result.payload.answer == f"{len(text)}:8"
+    assert result.payload.evidence[0].path == "notes.txt"
+    assert result.nodes[0].calls == 1
+    assert "ENTRY-VALUE 7" in adapter.leaf_requests[0].prompt
+    for turn in adapter.sessions[0].turn_requests:
+        assert "entry-value 7" not in turn.prompt
+        assert "αβ🙂" not in turn.prompt
+    assert "entry-value 7" not in program
+    first = _iteration(result, "node_000001", 0)
+    assert len(first["results"]) == 1  # Context reads are not tool/model calls or previews.
+    assert first["executions"][0]["stdout"] == "processed\n"
+
+
+@pytest.mark.asyncio
+async def test_recursive_child_has_lazy_paginated_context_without_custom_tools(
+    context_root: Path, tmp_path: Path
+) -> None:
+    for index in range(105):
+        (context_root / f"{index:03d}.txt").write_text(str(index), encoding="utf-8")
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [_Step(response='```repl\nsubmit_answer(rlm_query("Read numeric files"))\n```')],
+            [
+                _Step(
+                    response="""```repl
+total = 0
+count = 0
+for entry in context.files():
+    if entry["relative_path"] != "notes.txt":
+        total += int(context.read(entry["id"])["text"])
+        count += 1
+submit_answer(str(count) + ":" + str(total))
+```"""
+                )
+            ],
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Read through a recursive child",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(run_timeout_seconds=10, node_timeout_seconds=8),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None and result.payload.answer == f"105:{sum(range(105))}"
+    assert len(adapter.sessions) == 2
+    assert result.nodes[1].calls == 0
+
+
+@pytest.mark.asyncio
+async def test_context_errors_are_catchable_in_the_running_python_block(
+    context_root: Path, tmp_path: Path
+) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(
+                    response="""```repl
+try:
+    context.read("../outside.txt")
+except RuntimeError:
+    entry = next(context.files())
+    submit_answer(context.read(entry["id"])["text"])
+```"""
+                )
+            ]
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Recover from a bad context request",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None and result.payload.answer == "known context\n"
+
+
+@pytest.mark.asyncio
+async def test_context_is_available_during_finalization_without_orchestration(
+    context_root: Path, tmp_path: Path
+) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(response="```repl\nentry = next(context.files())\n```"),
+                _Step(response='```repl\nsubmit_answer(context.read(entry["id"])["text"])\n```'),
+            ]
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Read during finalization",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_iterations=1, orchestrator=False),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None and result.payload.answer == "known context\n"
+    assert result.nodes[0].calls == 0
+    assert _iteration(result, "node_000001", 1)["phase"] == "finalization"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_context_read_runs_off_loop_and_is_cancelled_with_node(
+    context_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
+) -> None:
+    started = Event()
+    stopped = Event()
+
+    def blocked_request(
+        self: ContextReader, request: dict[str, Any], *, deadline: float, cancel_event: Event
+    ) -> dict[str, Any]:
+        del self, request, deadline
+        started.set()
+        try:
+            assert cancel_event.wait(2), "controller failed to signal cancellation"
+            raise ContextAccessError("cancelled")
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(ContextReader, "request", blocked_request)
+    adapter = _FakeAdapter(root_scripts=[[_Step(response="```repl\nnext(context.files())\n```")]])
+    task = asyncio.create_task(
+        RecursiveRunner(lambda: adapter).run(
+            task="Read context",
+            context=context_root,
+            state_directory=tmp_path / "state",
+            config=_config(node_timeout_seconds=2 if cancel else 0.3),
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+    if cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        result, _ = await task
+        assert result.status == RunStatus.timed_out
+    assert await asyncio.to_thread(stopped.wait, 1)
+    assert adapter.sessions[0].closed
 
 
 @pytest.mark.asyncio

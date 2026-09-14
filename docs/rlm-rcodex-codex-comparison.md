@@ -11,6 +11,7 @@ rcodex imposes that protocol on Codex and records it as part of its runtime cont
 | Concept | Upstream RLM | rcodex | Ordinary Codex |
 | --- | --- | --- | --- |
 | Root | Root LM operating a Python REPL | Root retained Codex thread operating a dedicated restricted Python REPL | Current main Codex task/thread |
+| Programmatic corpus access | Input stored in the REPL's context variable | Built-in `context.files`, `context.read`, and `context.chunks` lazily deliver manifest-backed text into Python variables through controller RPC | Native tools can inspect files in the agent's ordinary tool loop |
 | Terminal leaf | `llm_query()` makes a plain LM call and returns text to Python | `llm_query()` starts a fresh terminal Codex leaf and returns its answer string to Python | No distinct leaf type; the main agent or a subagent completes its assigned work |
 | Recursive child | `rlm_query()` creates a child RLM with its own REPL | `rlm_query()` creates a fresh recursive Codex node with its own retained thread and REPL | Optional delegated subagent thread, not an automatic `rlm_query()`-style recursion |
 | Parallel children | `llm_query_batched()` or `rlm_query_batched()` | The same two batched functions run bounded child calls concurrently | Parallel subagent threads or concurrent independent tool calls |
@@ -26,6 +27,11 @@ now exposes the same Python-level query interaction while implementing children 
 nodes, and ordinary Codex uses tools and subagents as general capabilities rather than as an RLM
 execution protocol. An rcodex Python namespace lasts for one recursive node in one run; resuming a
 persistent root Codex thread in a later invocation starts a fresh namespace.
+
+rcodex's context proxy connects corpus inspection with Python-level query calls without copying
+source text through the parent model. It preserves the restricted worker boundary and reads at
+most 64 KiB per request. Recursive children currently use the same original directory; passing
+large transformed context into a child's environment remains [RLM-002 in the backlog](backlog.md#rlm-002-give-recursive-children-their-own-external-context).
 
 The upstream behavior is pinned in the [RLM sources](../references/rlm.md). Codex subagent
 behavior is documented in the [official Codex references](../references/codex.md#codex-subagents).

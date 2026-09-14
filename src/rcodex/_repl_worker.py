@@ -13,6 +13,7 @@ import json
 import sys
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any
 
@@ -90,11 +91,51 @@ def _truncate_utf8(value: str, maximum: int) -> tuple[str, bool]:
     return encoded[:maximum].decode("utf-8", errors="ignore"), True
 
 
+class _Context:
+    """Lazy RPC proxy; file handles and filesystem access stay in the controller."""
+
+    def __init__(self, request: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        self._request = request
+
+    def _call(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        response = self._request({"type": "context", "arguments": arguments})
+        if response.get("error") is not None:
+            raise RuntimeError(response["error"])
+        value = response.get("value")
+        if not isinstance(value, dict):
+            raise RuntimeError("invalid controller context response")
+        return value
+
+    def files(self) -> Iterator[dict[str, Any]]:
+        offset = 0
+        while True:
+            page = self._call({"operation": "files", "offset": offset})
+            yield from page["entries"]
+            if page["eof"]:
+                return
+            offset = page["next_offset"]
+
+    def read(self, entry_id: str, offset: int = 0, max_bytes: int = 65536) -> dict[str, Any]:
+        return self._call(
+            {"operation": "read", "entry_id": entry_id, "offset": offset, "max_bytes": max_bytes}
+        )
+
+    def chunks(self, entry_id: str, max_bytes: int = 65536) -> Iterator[dict[str, Any]]:
+        offset = 0
+        while True:
+            chunk = self.read(entry_id, offset, max_bytes)
+            yield chunk
+            if chunk["eof"]:
+                return
+            offset = chunk["next_offset"]
+
+
 class _Worker:
     def __init__(self, tool_names: list[str], max_output_bytes: int) -> None:
         self.max_output_bytes = max_output_bytes
         self.answer = _AnswerDict()
         self.protected: dict[str, Any] = {
+            "context": _Context(self._request),
             "llm_query": self.llm_query,
             "llm_query_batched": self.llm_query_batched,
             "rlm_query": self.rlm_query,

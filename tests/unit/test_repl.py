@@ -20,9 +20,14 @@ async def _tools(name: str, arguments: dict[str, Any]) -> tuple[Any, CallResult]
     raise AssertionError("no tool call expected")
 
 
+async def _context(arguments: dict[str, Any]) -> dict[str, Any]:
+    raise AssertionError("no context call expected")
+
+
 @pytest.mark.asyncio
 async def test_repl_is_persistent_and_queries_resume_python_execution() -> None:
     session = await ReplSession.start(
+        context_handler=_context,
         tool_names=[],
         max_output_bytes=4096,
         max_message_bytes=64 * 1024,
@@ -55,6 +60,7 @@ async def test_repl_is_persistent_and_queries_resume_python_execution() -> None:
 @pytest.mark.asyncio
 async def test_repl_rejects_imports_and_file_access() -> None:
     session = await ReplSession.start(
+        context_handler=_context,
         tool_names=[],
         max_output_bytes=4096,
         max_message_bytes=64 * 1024,
