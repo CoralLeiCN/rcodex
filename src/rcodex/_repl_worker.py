@@ -131,8 +131,11 @@ class _Context:
 
 
 class _Worker:
-    def __init__(self, tool_names: list[str], max_output_bytes: int) -> None:
+    def __init__(
+        self, tool_names: list[str], max_output_bytes: int, max_query_context_bytes: int
+    ) -> None:
         self.max_output_bytes = max_output_bytes
+        self.max_query_context_bytes = max_query_context_bytes
         self.answer = _AnswerDict()
         self.protected: dict[str, Any] = {
             "context": _Context(self._request),
@@ -216,13 +219,45 @@ class _Worker:
             raise RuntimeError("REPL controller returned an invalid RPC response")
         return response
 
-    def _query(self, mode: str, prompts: list[str], model: str | None) -> list[str]:
+    def _query(
+        self,
+        mode: str,
+        prompts: list[str],
+        model: str | None,
+        contexts: list[str | None] | None = None,
+    ) -> list[str]:
         if not all(isinstance(prompt, str) and prompt.strip() for prompt in prompts):
             raise ValueError("query prompts must be non-blank strings")
         if model is not None and not isinstance(model, str):
             raise TypeError("model must be a string or None")
+        if contexts is None:
+            contexts = [None] * len(prompts)
+        if not isinstance(contexts, list) or len(contexts) != len(prompts):
+            raise ValueError("contexts must be a list with one entry per prompt")
+        total = 0
+        for context in contexts:
+            if context is None:
+                continue
+            if not isinstance(context, str):
+                raise TypeError("each context must be text or None")
+            if "\x00" in context:
+                raise ValueError("context must not contain NUL characters")
+            if len(context) > self.max_query_context_bytes - total:
+                raise ValueError("contexts exceed max_query_context_bytes")
+            try:
+                total += len(context.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise ValueError("context must be valid UTF-8 text") from None
+            if total > self.max_query_context_bytes:
+                raise ValueError("contexts exceed max_query_context_bytes")
         response = self._request(
-            {"type": "query", "mode": mode, "prompts": prompts, "model": model}
+            {
+                "type": "query",
+                "mode": mode,
+                "prompts": prompts,
+                "model": model,
+                "contexts": contexts,
+            }
         )
         values = response.get("values")
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
@@ -235,11 +270,19 @@ class _Worker:
     def llm_query_batched(self, prompts: list[str], model: str | None = None) -> list[str]:
         return self._query("leaf", list(prompts), model)
 
-    def rlm_query(self, prompt: str, model: str | None = None) -> str:
-        return self._query("recursive", [prompt], model)[0]
+    def rlm_query(
+        self, prompt: str, model: str | None = None, *, context: str | None = None
+    ) -> str:
+        return self._query("recursive", [prompt], model, [context])[0]
 
-    def rlm_query_batched(self, prompts: list[str], model: str | None = None) -> list[str]:
-        return self._query("recursive", list(prompts), model)
+    def rlm_query_batched(
+        self,
+        prompts: list[str],
+        model: str | None = None,
+        *,
+        contexts: list[str | None] | None = None,
+    ) -> list[str]:
+        return self._query("recursive", list(prompts), model, contexts)
 
     def _tool_proxy(self, name: str) -> Any:
         def invoke(*args: Any, **kwargs: Any) -> Any:
@@ -331,11 +374,14 @@ def main() -> int:
             raise ValueError("first REPL protocol message must initialize the worker")
         raw_tools = initialization.get("tool_names", [])
         maximum = initialization.get("max_output_bytes")
+        context_maximum = initialization.get("max_query_context_bytes")
         if not isinstance(raw_tools, list) or not all(isinstance(item, str) for item in raw_tools):
             raise ValueError("tool_names must be a string list")
         if not isinstance(maximum, int) or maximum <= 0:
             raise ValueError("max_output_bytes must be positive")
-        worker = _Worker(raw_tools, maximum)
+        if not isinstance(context_maximum, int) or context_maximum <= 0:
+            raise ValueError("max_query_context_bytes must be positive")
+        worker = _Worker(raw_tools, maximum, context_maximum)
         _send({"type": "ready"})
         while True:
             message = _receive()

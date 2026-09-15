@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -11,7 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from rcodex.context import canonical_json_bytes
-from rcodex.models import ArtifactPaths, RunEvent, SessionRecord, StrictModel
+from rcodex.models import (
+    ArtifactPaths,
+    ContextManifest,
+    ManifestEntry,
+    RunEvent,
+    SessionRecord,
+    StrictModel,
+)
 
 MAX_EVENT_BYTES = 16_384
 
@@ -141,6 +149,28 @@ class RunStore:
 
     def write(self, path: Path, value: StrictModel) -> None:
         atomic_write_json(path, value)
+
+    def write_child_context(self, node_id: str, text: str) -> tuple[ContextManifest, Path]:
+        """Persist supplied text outside prompts, with a content-free node-local manifest."""
+        root = self.run_directory / "contexts" / node_id
+        manifest_path = root.with_suffix(".json")
+        content = text.encode("utf-8")
+        manifest = ContextManifest(
+            context_root=str(root),
+            entries=[
+                ManifestEntry(
+                    id="file_000001",
+                    relative_path="input.txt",
+                    bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    media_type="text/plain",
+                    line_count=text.count("\n") + int(bool(text) and not text.endswith("\n")),
+                )
+            ],
+        )
+        atomic_write_bytes(root / "input.txt", content)
+        atomic_write_json(manifest_path, manifest)
+        return manifest, manifest_path
 
     def node_path(self, node_id: str) -> Path:
         ensure_private_directory(self.nodes_directory)

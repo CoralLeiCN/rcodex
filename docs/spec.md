@@ -2,7 +2,7 @@
 
 - Status: authoritative for the current inference runtime
 - Version: 1.0
-- Date: 2026-09-15
+- Date: 2026-09-16
 - Target platforms: macOS and Linux
 
 ## 1. Scope and authority
@@ -33,8 +33,8 @@ execution substrate:
 | Root REPL loop | Retain one Codex thread and one persistent restricted Python worker for that recursive node. |
 | Execute a root-produced program | Extract fenced `repl` blocks and execute them in the node's worker, never in the controller process. |
 | `llm_query` | Make a synchronous worker-to-controller RPC that starts one fresh terminal Codex leaf and returns its answer string to the running Python block. |
-| `rlm_query` | Make the same RPC to a fresh recursive Codex child with its own retained thread and REPL while depth permits. |
-| Recursive call at terminal depth | Record the request as recursive but execute it as a terminal leaf. |
+| `rlm_query` | Start a fresh recursive Codex child with its own retained thread and REPL; optional transformed text becomes the child's external context. |
+| Recursive call at terminal depth | Record the request as recursive but execute it as a terminal leaf with read-only access to the same supplied context artifact. |
 | Batched subcalls | `llm_query_batched` and `rlm_query_batched` execute bounded calls concurrently and return strings in request order. |
 | Persistent environment | Keep Python variables across turns of one node; persist and resume only the root Codex thread across separate completions. |
 | Compaction | Compact a retained recursive thread after a measured threshold and wait until the public SDK read surface reports the completed compaction item. |
@@ -43,9 +43,9 @@ execution substrate:
 
 rcodex executes model-generated Python in a separate restricted worker process, never in its
 controller process or a trusted tool handler. A Codex leaf remains a read-only agent turn rather
-than a plain text-only LM request. All nodes may inspect the full authorized context directory;
-manifest references are navigation and evidence anchors, not a confidentiality boundary between
-nodes.
+than a plain text-only LM request. Each node uses its own context root and manifest. A supplied
+context replaces the inherited manifest for that child and its descendants; manifest references
+are navigation and evidence anchors, not a filesystem confidentiality boundary between nodes.
 
 The upstream provider matrix, container environment matrix, visualizer application, and training
 harness are not copied. Codex is the one agent substrate. rcodex supplies its own restricted local
@@ -120,7 +120,8 @@ values are normalized to deterministic JSON text.
 ### 4.1 Path contract
 
 - The context must resolve to one existing local directory.
-- The state directory must not equal, contain, or be contained by the context directory.
+- The state directory must not equal, contain, or be contained by the caller's context directory.
+  Controller-created child contexts are run artifacts inside the state directory (section 4.5).
 - An output file must be outside both the context and state directory.
 - An existing regular output file is atomically replaced after the run result is persisted.
 - Symlink aliases are resolved before containment checks.
@@ -184,7 +185,7 @@ Every successful leaf or recursive node returns schema version `1.0` with:
 - `evidence`: zero to 256 manifest-backed items;
 - `uncertainties`: zero to 64 bounded strings.
 
-An evidence item must pair an existing manifest ID with its exact relative path and a valid
+An evidence item must pair an ID in the returning node's manifest with its exact relative path and a valid
 one-based line range within that file. The controller checks direct-leaf raw UTF-8 output size
 and every final payload's canonical strict JSON size. Recursive Codex response size is checked
 separately as REPL code. Unknown fields, wrong types, invalid evidence, empty output, or oversized
@@ -193,7 +194,7 @@ output fail the boundary.
 ### 4.4 REPL context interface
 
 Every recursive node receives a built-in `context` object. It uses a dedicated worker-to-controller
-RPC channel, independent of custom tools, to expose only the run's manifest-backed files:
+RPC channel, independent of custom tools, to expose only that node's manifest-backed files:
 
 ```python
 context.files()  # lazy iterator of manifest entry dictionaries
@@ -234,7 +235,61 @@ Returned text stays in Python variables and is not automatically included in mod
 call-result artifacts. Explicit printing, final answers, or subsequent model/custom-tool calls
 can expose it through their existing output paths. Content-free `context.accessed` events record
 successful enumeration/read operations. This interface does not change native Codex filesystem
-access, child task-string limits, or the shared context directory used by recursive children.
+access or child task-string limits. Supplied child contexts use this same read interface.
+
+### 4.5 Child-specific external context
+
+Python can supply transformed text independently of a recursive child's instruction:
+
+```python
+text = "".join(part["text"] for part in context.chunks(next(context.files())["id"]))
+result = rlm_query("Analyze the transformed records", context=text.upper())
+results = rlm_query_batched(
+    ["Analyze the first half", "Analyze the second half"],
+    contexts=[text[:len(text) // 2], text[len(text) // 2:]],
+)
+```
+
+`context` accepts a UTF-8 string without NUL characters, including an empty string. The batch
+`contexts` argument is a list of strings or `None`, with exactly one entry per prompt. The worker
+validates these arguments before dispatch and the controller independently validates the RPC.
+Wrong types, invalid text, mismatched lists, and oversized query contexts produce catchable Python
+errors through the public helpers; invalid RPCs return bounded error strings without input text.
+The instruction retains its 16,384-character limit. Supplied text can exceed it.
+
+For an admitted child, the controller writes the complete text to
+`contexts/<node-id>/input.txt` and its content-free manifest to `contexts/<node-id>.json` in the
+run directory. This manifest contains one `file_000001` entry with its byte length, hash, and
+line count. The child's working directory and `context.files/read/chunks` use this new context.
+Its initial prompt contains the instruction and paths, never the supplied text. Root include/exclude
+patterns apply to the caller's corpus, not to derived `input.txt` artifacts.
+
+Omitting `context` or passing `None` inherits the calling node's manifest, including when the
+caller already has supplied context. Omitting `contexts` inherits it for every batch member;
+an explicit `None` inherits it for that member. An empty string creates an empty context file.
+Descendants can inspect, transform, and supply their own text with the same functions. Ordinary
+`llm_query*` calls inherit their caller's context. Batches return answers in request order.
+
+At terminal depth, the requested recursive call becomes a leaf with the same supplied context
+root and manifest. The leaf reads `input.txt` in bounded portions through its native read-only
+local tools; it has no REPL. The text is not inlined or truncated into its initial prompt.
+
+`max_query_context_bytes` bounds aggregate UTF-8 text in one scalar or batched query (default
+8 MiB, maximum 16 MiB), including texts for calls that may later be rejected. The RPC transport
+budget accounts for sixfold JSON escaping separately from ordinary protocol overhead.
+`max_total_child_context_bytes` bounds all newly admitted context text across the run (default
+64 MiB, maximum 1 GiB). Admission checks and reservations are serialized with node reservation.
+Excess calls return `Error (context-limit)` without starting a child or writing its context.
+Node/call limits still apply. Inheritance consumes no additional context bytes; each explicit
+copy counts separately, and admitted contexts remain charged even if a child later fails.
+These settings are also available as `--max-query-context-bytes` and
+`--max-total-child-context-bytes`. They are separate from the original corpus scan limit.
+
+Each node record names and hashes its effective context manifest. Evidence is validated against
+that manifest for both recursive nodes and leaves; child-local evidence must not be reused as
+parent evidence without matching the parent's sources. Before reporting run success, the
+controller rechecks the original corpus and each distinct derived context. Derived text and
+manifests remain in the durable run artifacts under the existing private state permissions.
 
 ## 5. Execution strategies and REPL protocol
 
@@ -266,8 +321,8 @@ context.read(entry_id, offset=0, max_bytes=65536) -> dict
 context.chunks(entry_id, max_bytes=65536) -> Iterator[dict]
 llm_query(prompt, model=None) -> str
 llm_query_batched(prompts, model=None) -> list[str]
-rlm_query(prompt, model=None) -> str
-rlm_query_batched(prompts, model=None) -> list[str]
+rlm_query(prompt, model=None, *, context=None) -> str
+rlm_query_batched(prompts, model=None, *, contexts=None) -> list[str]
 SHOW_VARS() -> str
 submit_answer(answer, evidence=None, uncertainties=None) -> None
 answer  # RLM-compatible dictionary with content and ready keys
@@ -401,6 +456,8 @@ batch sequence.
 | `tool_timeout_seconds` | 30 s | `>0` to 3,600 s | Hard async tool wait, capped by node/run deadline |
 | `max_manifest_entries` | 100,000 | 1 to 999,999 | Hard before Codex starts |
 | `max_context_bytes` | 10 GiB | 1 B to 1 TiB | Hard while scanning |
+| `max_query_context_bytes` | 8 MiB | 1 B to 16 MiB | Hard aggregate supplied context per scalar/batched query |
+| `max_total_child_context_bytes` | 64 MiB | 1 B to 1 GiB | Hard run-wide admitted child-context bytes |
 | `max_final_result_bytes` | 128 KiB | 1 KiB to 1 MiB | Hard direct raw and all canonical final-payload bound |
 | `max_repl_code_bytes` | 128 KiB | 1 KiB to 1 MiB | Hard raw recursive Codex-response bound |
 | `max_repl_output_bytes` | 256 KiB | 1 KiB to 16 MiB | Hard per-stream capture and encoded feedback bound |
@@ -429,7 +486,7 @@ trusted synchronous work or an async handler with cooperative cancellation.
 Every `RunResult.runtime.limit_report` labels enforcement instead of implying unsupported
 guarantees:
 
-- `hard`: run/node/leaf timeouts, depth, iteration, REPL code/output/CPU, per-iteration calls,
+- `hard`: run/node/leaf timeouts, depth, iteration, supplied context per query/run, REPL code/output/CPU, per-iteration calls,
   per-node calls, total nodes, batch size, concurrency, retained sessions, and the live-process
   upper bound;
 - `observed`: `max_tokens`, checked from SDK usage after each completed turn, so one turn can
@@ -587,6 +644,9 @@ Each run creates:
 <state-dir>/runs/<run-id>/
   request.json
   context-manifest.json
+  contexts/                  # created only when a child receives supplied context
+    node_000002.json          # content-free manifest
+    node_000002/input.txt     # complete supplied UTF-8 text
   nodes/
     node_000001.json
     ...
@@ -598,8 +658,9 @@ Each run creates:
 ```
 
 Node records capture parent/call relationships, depth, requested/executed modes, model, status,
-thread ID, usage, payload/partial answer, safe error, and the SHA-256 of that node's initial
-prompt. Every REPL and finalization iteration records the SHA-256 of the exact prompt used,
+thread ID, usage, payload/partial answer, safe error, `context_manifest`,
+`context_manifest_sha256`, and the SHA-256 of that node's initial prompt. Inherited contexts
+reference the same manifest without copying it. Every REPL and finalization iteration records the SHA-256 of the exact prompt used,
 executed code blocks, captured stdout/stderr, visible variable names and types, any typed final
 payload, ordered call results, usage, timing, validation error, phase, and compaction-completion
 flag.
@@ -612,7 +673,7 @@ root/sub tool definitions. Runtime metadata retains a compact prompt-template/ha
 the node and iteration fields are the complete per-turn mapping. Invalid raw model output is not
 stored; its hash and bounded validation counts are.
 
-Artifacts do contain caller tasks, model answers, child tasks/results, and custom-tool values,
+Artifacts do contain caller tasks, supplied child contexts, model answers, child tasks/results, and custom-tool values,
 which may reproduce context data. rcodex enforces the POSIX owner-only modes in section 4.1; the
 operator must still protect the account and state location accordingly.
 `verbose=True`/`--verbose` additionally prints `[rcodex]` event summaries to stderr, leaving the
@@ -751,7 +812,7 @@ metadata, limits, and capability claims. The model owns REPL code, query prompts
 evidence, uncertainties, and tool arguments.
 
 Failures use bounded codes covering authentication, SDK startup/runtime, timeout, cancellation,
-model output, context integrity, manifest/storage/cleanup, node/call/iteration/token/error limits,
+model output, context integrity, manifest/storage/cleanup, context/node/call/iteration/token/error limits,
 tools, unsupported requests, and unexpected controller errors. SDK runtime failures are marked
 transient where appropriate; model prose cannot set retryability. Unexpected exceptions persist
 only their type name, not an uncontrolled message or traceback.
