@@ -107,6 +107,10 @@ def test_run_config_validates_recursive_limits_and_model_overrides() -> None:
         RunConfig(max_manifest_entries=1_000_000)
     with pytest.raises(ValueError):
         RunConfig(max_batch_size=4097)
+    with pytest.raises(ValueError):
+        RunConfig(max_query_context_bytes=16_777_217)
+    with pytest.raises(ValueError):
+        RunConfig(max_total_child_context_bytes=0)
 
 
 def test_run_config_child_effort_falls_back_only_when_unset() -> None:

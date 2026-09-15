@@ -24,7 +24,7 @@ from rcodex.codex_adapter import (
     RootTurnRequest,
 )
 from rcodex.config import RunConfig
-from rcodex.context import ManifestCancelledError
+from rcodex.context import ManifestCancelledError, manifest_sha256
 from rcodex.models import (
     BatchFailure,
     CallMode,
@@ -506,6 +506,270 @@ submit_answer(str(count) + ":" + str(total))
     assert result.payload is not None and result.payload.answer == f"105:{sum(range(105))}"
     assert len(adapter.sessions) == 2
     assert result.nodes[1].calls == 0
+
+
+@pytest.mark.asyncio
+async def test_large_transformed_context_reaches_child_and_descendant_without_prompt_text(
+    context_root: Path, tmp_path: Path
+) -> None:
+    source = "distinctive-source-αβ🙂\n" * 10_000
+    (context_root / "notes.txt").write_text(source, encoding="utf-8")
+    read_text = 'text = "".join(c["text"] for c in context.chunks(next(context.files())["id"]))'
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(
+                    response="```repl\n"
+                    + read_text
+                    + '\nsubmit_answer(rlm_query("Analyze", context=text.upper()))\n```'
+                )
+            ],
+            [
+                _Step(response="```repl\n" + read_text + "\n```"),
+                _Step(
+                    response="```repl\n"
+                    'submit_answer(rlm_query("Analyze reversed text", context=text[::-1]))\n```'
+                ),
+            ],
+            [
+                _Step(
+                    response="```repl\n"
+                    + read_text
+                    + '\nsubmit_answer(str(len(text)) + ":" + text[-22:])\n```'
+                )
+            ],
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Transform and recurse",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(include=("notes.txt",), max_context_bytes=len(source.encode("utf-8"))),
+    )
+    assert result.status == RunStatus.succeeded
+    transformed = source.upper()
+    reversed_text = transformed[::-1]
+    assert result.payload is not None
+    assert result.payload.answer == f"{len(reversed_text)}:{reversed_text[-22:]}"
+    for node, expected in zip(result.nodes[1:], [transformed, reversed_text], strict=True):
+        manifest = ContextManifest.model_validate_json(_read_bytes(node.context_manifest))
+        assert node.context_manifest_sha256 == manifest_sha256(manifest)
+        assert manifest.entries[0].bytes == len(expected.encode("utf-8"))
+        assert _read_text(str(Path(manifest.context_root) / "input.txt")) == expected
+        assert expected[:100] not in _read_text(node.context_manifest)
+        assert Path(manifest.context_root) != context_root
+    assert adapter.start_requests[1].context_root != adapter.start_requests[2].context_root
+    for session in adapter.sessions:
+        initial = session.turn_requests[0].prompt
+        for text in (source, transformed, reversed_text):
+            assert text[:100] not in initial
+    assert "distinctive-source" not in _read_text(result.artifacts.events)
+
+
+@pytest.mark.asyncio
+async def test_batched_contexts_preserve_order_empty_text_and_parent_inheritance(
+    context_root: Path, tmp_path: Path
+) -> None:
+    read_and_return = (
+        '```repl\nsubmit_answer(context.read(next(context.files())["id"])["text"] or "empty")\n```'
+    )
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(
+                    response="```repl\n"
+                    'submit_answer(rlm_query("Parent", context="parent-specific"))\n```'
+                )
+            ],
+            [
+                _Step(
+                    response="""```repl
+answers = rlm_query_batched(
+    ["slow", "fast", "empty", "inherit"], contexts=["first", "second", "", None]
+)
+submit_answer("|".join(answers))
+```"""
+                )
+            ],
+            [_Step(response=read_and_return, delay=0.05)],
+            [_Step(response=read_and_return)],
+            [_Step(response=read_and_return)],
+            [_Step(response=read_and_return)],
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Batch distinct contexts",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_total_child_context_bytes=len("parent-specificfirstsecond")),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None
+    assert result.payload.answer == "first|second|empty|parent-specific"
+    assert len(result.nodes) == 6
+    assert result.nodes[-1].context_manifest == result.nodes[1].context_manifest
+    assert len({node.context_manifest for node in result.nodes}) == 5
+    parent_results = _iteration(result, "node_000002", 0)["results"]
+    assert [call["payload"]["answer"] for call in parent_results] == [
+        "first",
+        "second",
+        "empty",
+        "parent-specific",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_depth", [1, 2])
+async def test_terminal_fallback_and_plain_leaves_read_the_supplied_context(
+    context_root: Path, tmp_path: Path, max_depth: int
+) -> None:
+    source = "leaf-source-🙂\n" * 5000
+    (context_root / "notes.txt").write_text(source, encoding="utf-8")
+    expected = source.upper()
+
+    def inspect_leaf() -> None:
+        request = adapter.leaf_requests[0]
+        assert request.context_root != context_root
+        assert (request.context_root / "input.txt").read_text(encoding="utf-8") == expected
+        assert expected[:100] not in request.prompt
+        assert str(request.context_root) in request.prompt
+
+    root_script = [
+        _Step(
+            response="""```repl
+text = "".join(c["text"] for c in context.chunks(next(context.files())["id"]))
+submit_answer(rlm_query("Read supplied text", context=text.upper()))
+```"""
+        )
+    ]
+    child_script = [_Step(response='```repl\nsubmit_answer(llm_query("Read inherited text"))\n```')]
+    adapter = _FakeAdapter(
+        root_scripts=[root_script] if max_depth == 1 else [root_script, child_script],
+        leaf_steps=[_Step(response=_final_payload("read complete"), action=inspect_leaf)],
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Read at terminal depth",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_depth=max_depth),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None and result.payload.answer == "read complete"
+    assert result.nodes[-1].executed_mode == CallMode.leaf
+    if max_depth == 1:
+        assert result.nodes[-1].requested_mode == CallMode.recursive
+    else:
+        assert result.nodes[-1].context_manifest == result.nodes[1].context_manifest
+
+
+@pytest.mark.asyncio
+async def test_run_context_budget_rejects_excess_concurrent_children_and_allows_recovery(
+    context_root: Path, tmp_path: Path
+) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(
+                    response="""```repl
+results = rlm_query_batched(
+    ["one", "two", "three"], contexts=["é" * 4, "ö" * 4, "ü" * 4]
+)
+assert results[0] == "accepted"
+assert all("context-limit" in value for value in results[1:])
+submit_answer(rlm_query("recover"))
+```"""
+                )
+            ],
+            [_Step(response=_final_repl("accepted"))],
+            [
+                _Step(
+                    response='```repl\nsubmit_answer(context.read(next(context.files())["id"])["text"])\n```'
+                )
+            ],
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Respect context budget",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_query_context_bytes=24, max_total_child_context_bytes=8),
+    )
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None and result.payload.answer == "known context\n"
+    assert len(result.nodes) == 3
+    results = _iteration(result, "node_000001", 0)["results"]
+    assert [call["status"] for call in results] == [
+        "succeeded",
+        "rejected",
+        "rejected",
+        "succeeded",
+    ]
+    derived = [
+        path
+        for path in _private_modes(Path(result.artifacts.run_directory))[1]
+        if path.startswith("contexts/") and path.endswith("/input.txt")
+    ]
+    assert len(derived) == 1
+
+
+@pytest.mark.asyncio
+async def test_child_evidence_uses_its_own_manifest(context_root: Path, tmp_path: Path) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(
+                    response="```repl\n"
+                    'submit_answer(rlm_query("Cite transformed data", '
+                    'context="one\\ntwo\\nthree\\n"))\n```'
+                )
+            ],
+            [
+                _Step(
+                    response="""```repl
+entry = next(context.files())
+submit_answer("three lines", evidence=[{
+    "context_entry_id": entry["id"], "path": entry["relative_path"],
+    "line_start": 3, "line_end": 3, "description": "Transformed line"
+}])
+```"""
+                )
+            ],
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Cite child data",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(),
+    )
+    assert result.status == RunStatus.succeeded
+    child = result.nodes[1]
+    assert child.payload is not None
+    assert child.payload.evidence[0].path == "input.txt"
+    assert child.payload.evidence[0].line_end == 3
+
+
+@pytest.mark.asyncio
+async def test_mutated_child_context_prevents_success(context_root: Path, tmp_path: Path) -> None:
+    def mutate() -> None:
+        (adapter.start_requests[1].context_root / "input.txt").write_text(
+            "changed", encoding="utf-8"
+        )
+
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [_Step(response='```repl\nsubmit_answer(rlm_query("Read", context="initial"))\n```')],
+            [_Step(response=_final_repl("child answer"), action=mutate)],
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="Detect mutation",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(),
+    )
+    assert result.status != RunStatus.succeeded
+    assert result.error is not None and result.error.code == RunErrorCode.context_integrity
 
 
 @pytest.mark.asyncio

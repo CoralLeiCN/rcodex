@@ -11,6 +11,12 @@ injected `llm_query*` and `rlm_query*` functions synchronously return child answ
 Python can inspect, transform, branch on, aggregate, and make dependent calls before submitting
 the final answer. The built-in `context` object lazily enumerates manifest files and reads UTF-8
 chunks directly into Python variables, without copying source text through Codex messages.
+`rlm_query(..., context=text)` passes transformed text as a child's external context;
+`rlm_query_batched(..., contexts=[...])` supplies distinct inputs to a batch. Children read their
+input through the same context interface, while omitted context inherits the parent's manifest.
+Supplied text stays outside initial model prompts and remains available to terminal leaves on disk.
+The defaults allow 8 MiB per query or batch and 64 MiB of admitted child context per run; see
+the [child-context contract](docs/spec.md#45-child-specific-external-context).
 Strict JSON remains the internal RPC/artifact/result boundary; it is not the root Codex
 programming language.
 

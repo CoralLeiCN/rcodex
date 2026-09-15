@@ -26,9 +26,11 @@ from rcodex.config import (
     DEFAULT_MAX_FINAL_RESULT_BYTES,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_MAX_MANIFEST_ENTRIES,
+    DEFAULT_MAX_QUERY_CONTEXT_BYTES,
     DEFAULT_MAX_REPL_CODE_BYTES,
     DEFAULT_MAX_REPL_OUTPUT_BYTES,
     DEFAULT_MAX_TOOL_RESULT_BYTES,
+    DEFAULT_MAX_TOTAL_CHILD_CONTEXT_BYTES,
     DEFAULT_MAX_TOTAL_NODES,
     DEFAULT_NODE_TIMEOUT_SECONDS,
     DEFAULT_REPL_CPU_SECONDS,
@@ -154,6 +156,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_CONTEXT_BYTES,
     )
     run.add_argument(
+        "--max-query-context-bytes",
+        type=_positive_int,
+        default=DEFAULT_MAX_QUERY_CONTEXT_BYTES,
+    )
+    run.add_argument(
+        "--max-total-child-context-bytes",
+        type=_positive_int,
+        default=DEFAULT_MAX_TOTAL_CHILD_CONTEXT_BYTES,
+    )
+    run.add_argument(
         "--max-final-result-bytes",
         type=_positive_int,
         default=DEFAULT_MAX_FINAL_RESULT_BYTES,
@@ -226,6 +238,8 @@ async def _run(args: argparse.Namespace) -> int:
             tool_timeout_seconds=args.tool_timeout,
             max_manifest_entries=args.max_manifest_entries,
             max_context_bytes=args.max_context_bytes,
+            max_query_context_bytes=args.max_query_context_bytes,
+            max_total_child_context_bytes=args.max_total_child_context_bytes,
             max_final_result_bytes=args.max_final_result_bytes,
             max_repl_code_bytes=args.max_repl_code_bytes,
             max_repl_output_bytes=args.max_repl_output_bytes,

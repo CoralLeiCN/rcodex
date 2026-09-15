@@ -32,6 +32,10 @@ def test_run_parser_exposes_current_recursive_controls() -> None:
             "20",
             "--max-concurrency",
             "1",
+            "--max-query-context-bytes",
+            "20000",
+            "--max-total-child-context-bytes",
+            "60000",
             "--max-repl-code-bytes",
             "4096",
             "--max-repl-output-bytes",
@@ -55,6 +59,8 @@ def test_run_parser_exposes_current_recursive_controls() -> None:
     assert args.max_iterations == 7
     assert args.max_total_nodes == 20
     assert args.max_concurrency == 1
+    assert args.max_query_context_bytes == 20000
+    assert args.max_total_child_context_bytes == 60000
     assert args.max_repl_code_bytes == 4096
     assert args.max_repl_output_bytes == 8192
     assert args.repl_memory_bytes == 67_108_864

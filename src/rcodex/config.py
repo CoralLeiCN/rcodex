@@ -22,6 +22,8 @@ DEFAULT_LEAF_TIMEOUT_SECONDS = 300.0
 DEFAULT_TOOL_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_MANIFEST_ENTRIES = 100_000
 DEFAULT_MAX_CONTEXT_BYTES = 10 * 1024**3
+DEFAULT_MAX_QUERY_CONTEXT_BYTES = 8 * 1024**2
+DEFAULT_MAX_TOTAL_CHILD_CONTEXT_BYTES = 64 * 1024**2
 DEFAULT_MAX_FINAL_RESULT_BYTES = 128 * 1024
 DEFAULT_MAX_REPL_CODE_BYTES = 128 * 1024
 DEFAULT_MAX_REPL_OUTPUT_BYTES = 256 * 1024
@@ -57,6 +59,8 @@ class RunConfig:
     tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
     max_manifest_entries: int = DEFAULT_MAX_MANIFEST_ENTRIES
     max_context_bytes: int = DEFAULT_MAX_CONTEXT_BYTES
+    max_query_context_bytes: int = DEFAULT_MAX_QUERY_CONTEXT_BYTES
+    max_total_child_context_bytes: int = DEFAULT_MAX_TOTAL_CHILD_CONTEXT_BYTES
     max_final_result_bytes: int = DEFAULT_MAX_FINAL_RESULT_BYTES
     max_repl_code_bytes: int = DEFAULT_MAX_REPL_CODE_BYTES
     max_repl_output_bytes: int = DEFAULT_MAX_REPL_OUTPUT_BYTES
@@ -196,6 +200,8 @@ class RunConfig:
             tool_timeout_seconds=self.tool_timeout_seconds,
             max_manifest_entries=self.max_manifest_entries,
             max_context_bytes=self.max_context_bytes,
+            max_query_context_bytes=self.max_query_context_bytes,
+            max_total_child_context_bytes=self.max_total_child_context_bytes,
             max_final_result_bytes=self.max_final_result_bytes,
             max_repl_code_bytes=self.max_repl_code_bytes,
             max_repl_output_bytes=self.max_repl_output_bytes,
@@ -222,6 +228,16 @@ class RunConfig:
             retained_session_cap + self.max_concurrency,
         )
         hard = (
+            (
+                "max_query_context_bytes",
+                self.max_query_context_bytes,
+                "aggregate UTF-8 context bytes per scalar or batched recursive query",
+            ),
+            (
+                "max_total_child_context_bytes",
+                self.max_total_child_context_bytes,
+                "run-wide UTF-8 bytes of admitted child contexts; inheritance is free",
+            ),
             ("run_timeout_seconds", self.run_timeout_seconds, "monotonic whole-run deadline"),
             ("node_timeout_seconds", self.node_timeout_seconds, "per recursive node deadline"),
             ("leaf_timeout_seconds", self.leaf_timeout_seconds, "per terminal leaf deadline"),

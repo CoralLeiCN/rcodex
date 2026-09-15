@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
@@ -141,6 +141,10 @@ class _WaveInterrupted(BaseException):
     results: list[CallResult]
 
 
+class _ContextLimitError(ValueError):
+    """Admission would exceed the run-wide derived-context budget."""
+
+
 @dataclass(slots=True)
 class _SessionLease:
     handle: Any
@@ -218,6 +222,9 @@ class _MutableNode:
     started_at: datetime
     started_monotonic: float
     deadline: float
+    manifest: ContextManifest
+    manifest_path: Path
+    manifest_hash: str
     status: NodeStatus = NodeStatus.running
     thread_id: str | None = None
     initial_prompt_sha256: str | None = None
@@ -371,7 +378,7 @@ class _RunState:
     session_semaphores: list[asyncio.Semaphore]
     reservation_lock: asyncio.Lock
     manifest: ContextManifest | None = None
-    context_reader: ContextReader | None = None
+    child_context_bytes: int = 0
     nodes: dict[str, _MutableNode] = field(default_factory=dict)
     node_sequence: int = 0
     persistent_session_safe: bool = True
@@ -825,7 +832,6 @@ class RecursiveRunner:
         )
         assert root is not None
         if root_mode == CallMode.recursive:
-            state.context_reader = ContextReader(manifest)
             payload = await self._run_repl_session_node(
                 state,
                 root,
@@ -837,13 +843,15 @@ class RecursiveRunner:
         return payload
 
     @staticmethod
-    async def _scan_manifest(state: _RunState) -> ContextManifest:
+    async def _scan_manifest(
+        state: _RunState, *, context_root: Path | None = None, config: RunConfig | None = None
+    ) -> ContextManifest:
         cancel_event = Event()
         worker = asyncio.create_task(
             asyncio.to_thread(
                 build_manifest,
-                state.context_root,
-                state.config,
+                context_root if context_root is not None else state.context_root,
+                config if config is not None else state.config,
                 deadline=state.deadline,
                 cancel_event=cancel_event,
             )
@@ -874,12 +882,31 @@ class RecursiveRunner:
         task: str,
         model: str | None,
         effort: str,
+        context: str | None = None,
     ) -> _MutableNode | None:
         async with state.reservation_lock:
             if state.node_sequence >= state.config.max_total_nodes:
                 return None
+            state.remaining(deadline=parent.deadline if parent is not None else None)
+            node_id = f"node_{state.node_sequence + 1:06d}"
+            assert state.manifest is not None
+            manifest = parent.manifest if parent is not None else state.manifest
+            manifest_path = (
+                parent.manifest_path if parent is not None else state.store.manifest_path
+            )
+            manifest_hash = (
+                parent.manifest_hash if parent is not None else manifest_sha256(manifest)
+            )
+            if context is not None:
+                size = len(context.encode("utf-8"))
+                if size > state.config.max_query_context_bytes:
+                    raise _ContextLimitError("context exceeds max_query_context_bytes")
+                if state.child_context_bytes + size > state.config.max_total_child_context_bytes:
+                    raise _ContextLimitError("context exceeds max_total_child_context_bytes")
+                manifest, manifest_path = state.store.write_child_context(node_id, context)
+                manifest_hash = manifest_sha256(manifest)
+                state.child_context_bytes += size
             state.node_sequence += 1
-            node_id = f"node_{state.node_sequence:06d}"
             timeout = (
                 state.config.leaf_timeout_seconds
                 if executed_mode == CallMode.leaf
@@ -895,6 +922,9 @@ class RecursiveRunner:
                 task=task,
                 model=model,
                 reasoning_effort=effort,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                manifest_hash=manifest_hash,
                 started_at=datetime.now(UTC),
                 started_monotonic=time.monotonic(),
                 deadline=min(
@@ -918,11 +948,11 @@ class RecursiveRunner:
         return node
 
     async def _run_leaf_node(self, state: _RunState, node: _MutableNode) -> FinalPayload:
-        assert state.manifest is not None
+        context_root = Path(node.manifest.context_root)
         prompt = build_direct_prompt(
             node.task,
-            state.context_root,
-            state.store.manifest_path,
+            context_root,
+            node.manifest_path,
             user_prologue=state.config.user_prologue,
         )
         node.initial_prompt_sha256 = prompt_sha256(prompt)
@@ -934,7 +964,7 @@ class RecursiveRunner:
                 turn = await state.adapter.run_leaf(
                     DirectTurnRequest(
                         prompt=prompt,
-                        context_root=state.context_root,
+                        context_root=context_root,
                         model=node.model,
                         reasoning_effort=node.reasoning_effort,
                         output_schema=FinalPayload.model_json_schema(),
@@ -947,7 +977,7 @@ class RecursiveRunner:
                 )
             self._record_turn(state, node, turn)
             payload = self._parse_final(
-                turn.final_response, state.manifest, state.config.max_final_result_bytes
+                turn.final_response, node.manifest, state.config.max_final_result_bytes
             )
             self._complete_node(state, node, NodeStatus.succeeded, payload=payload)
             return payload
@@ -982,7 +1012,8 @@ class RecursiveRunner:
     ) -> FinalPayload:
         """Run one retained Codex thread with one persistent Python namespace."""
 
-        assert state.manifest is not None
+        context_root = Path(node.manifest.context_root)
+        context_reader = ContextReader(node.manifest)
         session_permit = state.session_semaphores[node.depth]
         permit_acquired = False
         cleanup_succeeded = True
@@ -1014,7 +1045,7 @@ class RecursiveRunner:
             async with _deadline_permit(state, state.semaphore, node.deadline):
                 session = await state.adapter.start_root(
                     RootSessionRequest(
-                        context_root=state.context_root,
+                        context_root=context_root,
                         model=node.model,
                         reasoning_effort=node.reasoning_effort,
                         timeout_seconds=state.remaining(deadline=node.deadline),
@@ -1036,12 +1067,11 @@ class RecursiveRunner:
             tools = state.tools if node.depth == 0 else state.sub_tools
 
             async def read_context(arguments: dict[str, Any]) -> dict[str, Any]:
-                assert state.context_reader is not None
                 cancel_event = Event()
                 try:
                     async with _deadline_permit(state, state.tool_semaphore, node.deadline):
                         value = await asyncio.to_thread(
-                            state.context_reader.request,
+                            context_reader.request,
                             arguments,
                             deadline=min(state.deadline, node.deadline),
                             cancel_event=cancel_event,
@@ -1064,6 +1094,7 @@ class RecursiveRunner:
                 context_handler=read_context,
                 tool_names=[definition["name"] for definition in tools.definitions()],
                 max_output_bytes=state.config.max_repl_output_bytes,
+                max_query_context_bytes=state.config.max_query_context_bytes,
                 max_message_bytes=2
                 * (
                     state.config.max_repl_code_bytes
@@ -1081,13 +1112,15 @@ class RecursiveRunner:
             )
             prompt = build_node_prompt(
                 node.task,
-                state.context_root,
-                state.store.manifest_path,
+                context_root,
+                node.manifest_path,
                 node_id=node.node_id,
                 depth=node.depth,
                 max_depth=state.config.max_depth,
                 max_iterations=state.config.max_iterations,
                 max_calls_per_iteration=state.config.max_calls_per_iteration,
+                max_query_context_bytes=state.config.max_query_context_bytes,
+                max_total_child_context_bytes=state.config.max_total_child_context_bytes,
                 tools=tools.definitions(),
                 user_prologue=state.config.user_prologue,
                 orchestrator=state.config.orchestrator,
@@ -1621,14 +1654,13 @@ class RecursiveRunner:
         *,
         allow_calls: bool,
     ) -> tuple[list[ReplExecutionRecord], list[CallResult], FinalPayload | None]:
-        assert state.manifest is not None
         iteration_capacity = state.config.max_calls_per_iteration if allow_calls else 0
         records: list[ReplExecutionRecord] = []
         all_results: list[CallResult] = []
         final_payload: FinalPayload | None = None
 
         async def query_handler(
-            mode: CallMode, prompts: list[str], model: str | None
+            mode: CallMode, prompts: list[str], model: str | None, contexts: list[str | None]
         ) -> tuple[list[str], list[CallResult]]:
             nonlocal iteration_capacity
             if mode not in {CallMode.leaf, CallMode.recursive}:
@@ -1640,9 +1672,10 @@ class RecursiveRunner:
                     call_id=f"q_{uuid.uuid4().hex}",
                     mode=delegate_mode,
                     task=prompt,
+                    context=context,
                     model=model,
                 )
-                for prompt in prompts
+                for prompt, context in zip(prompts, contexts, strict=True)
             ]
             before = node.calls
             capacity = iteration_capacity if state.config.orchestrator else 0
@@ -1681,7 +1714,7 @@ class RecursiveRunner:
             parsed_payload = (
                 self._parse_repl_final(
                     execution.final_payload,
-                    state.manifest,
+                    node.manifest,
                     state.config.max_final_result_bytes,
                 )
                 if execution.final_payload is not None
@@ -2106,6 +2139,7 @@ class RecursiveRunner:
                 task=call.task.strip(),
                 model=model,
                 effort=effort,
+                context=call.context,
             )
             if child is None:
                 error = RunError(
@@ -2189,7 +2223,14 @@ class RecursiveRunner:
             error_text = exc.error.message
             raise
         except ValueError as exc:
-            error = RunError(code=RunErrorCode.unsupported, message=str(exc))
+            error = RunError(
+                code=(
+                    RunErrorCode.context_limit
+                    if isinstance(exc, _ContextLimitError)
+                    else RunErrorCode.unsupported
+                ),
+                message=str(exc),
+            )
             error_text = error.message
             result = self._failed_call(
                 call.call_id,
@@ -2444,6 +2485,8 @@ class RecursiveRunner:
             requested_mode=node.requested_mode,
             executed_mode=node.executed_mode,
             task=node.task,
+            context_manifest=str(node.manifest_path),
+            context_manifest_sha256=node.manifest_hash,
             model=node.model,
             reasoning_effort=node.reasoning_effort,
             status=node.status,
@@ -2530,6 +2573,28 @@ class RecursiveRunner:
                 "context changed during the run",
                 {"changes": changes[:64], "change_count": len(changes)},
             )
+        # Supplied contexts are durable inputs too. Inherited manifests need only one scan.
+        checked = {state.store.manifest_path}
+        child_config = replace(
+            state.config,
+            include=(),
+            exclude=(),
+            max_context_bytes=state.config.max_query_context_bytes,
+        )
+        for node in state.nodes.values():
+            if node.manifest_path in checked:
+                continue
+            checked.add(node.manifest_path)
+            current = await self._scan_manifest(
+                state, context_root=Path(node.manifest.context_root), config=child_config
+            )
+            changes = integrity_changes(node.manifest, current)
+            if changes:
+                raise _BoundaryError(
+                    RunErrorCode.context_integrity,
+                    "child context changed during the run",
+                    {"node_id": node.node_id, "changes": changes[:64]},
+                )
         state.remaining()
         state.event("integrity.validated")
 

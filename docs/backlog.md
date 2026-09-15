@@ -17,29 +17,21 @@ See the [implemented interface](spec.md#44-repl-context-interface).
 
 ## RLM-002: Give recursive children their own external context
 
-- Status: Backlog
+- Status: Implemented (2026-09-16)
 - Priority: High
-- Dependency: RLM-001's context interface (implemented)
 
-Currently, `rlm_query(prompt)` becomes a task string capped at 16,384 characters and inserted
-into the child's model prompt. Every child receives the original context directory. This does
-not provide an external context containing the parent's programmatically transformed input.
+`rlm_query(..., context=text)` and `rlm_query_batched(..., contexts=[...])` accept
+child-specific transformed text independently of the bounded task instruction. The controller
+persists it as a private, manifest-backed input; initial model prompts contain paths without
+the supplied text. Children inspect it through `context.files/read/chunks` and can pass further
+transformations to descendants. Omitted context inherits the parent's current manifest.
 
-Separate the child instruction from its context. Let parent Python supply transformed data or
-a context reference that the controller exposes in the child's environment, with only bounded
-metadata entering the child's initial model prompt.
-
-Acceptance criteria:
-
-- Single and batched recursive calls accept child-specific context produced by parent Python.
-- Child context can exceed the task-string limit under explicit controller resource limits;
-  it is not embedded in the child's initial model prompt.
-- The child can inspect its supplied context through the REPL and derive further context for
-  descendants. Reusing the original directory is not a substitute for delivering that input.
-- Terminal-depth fallback defines how the supplied context remains accessible under its limits.
-- Tests verify transformed context reaches the correct child, descendants and batches preserve
-  their inputs, and source text is absent from initial recursive model prompts.
-- Replace affected contracts and update prompts, schemas, tests, and documentation together.
+Per-query and run-wide UTF-8 byte limits bound transfer and storage. Terminal-depth fallback
+keeps the same context on disk for the leaf's read-only local tools. Node records identify each
+context manifest, evidence uses the returning node's manifest, and success checks derived-input
+integrity. Tests cover large UTF-8 transformations, batches, descendants, empty/inherited inputs,
+terminal access, byte limits, invalid RPCs, and absence of source text from initial prompts.
+See the [implemented contract](spec.md#45-child-specific-external-context).
 
 ## RLM-003: Keep unprinted intermediate results out of model feedback
 

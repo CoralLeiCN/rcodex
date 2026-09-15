@@ -17,7 +17,8 @@ from rcodex.models import CallMode, CallResult
 from rcodex.repl_context import CONTEXT_MESSAGE_BYTES, ContextAccessError
 
 QueryHandler = Callable[
-    [CallMode, list[str], str | None], Awaitable[tuple[list[str], list[CallResult]]]
+    [CallMode, list[str], str | None, list[str | None]],
+    Awaitable[tuple[list[str], list[CallResult]]],
 ]
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[tuple[Any, CallResult]]]
 ContextHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -70,11 +71,13 @@ class ReplSession:
         process: asyncio.subprocess.Process,
         temporary_directory: tempfile.TemporaryDirectory[str],
         max_message_bytes: int,
+        max_query_context_bytes: int,
         context_handler: ContextHandler,
     ) -> None:
         self._process = process
         self._temporary_directory = temporary_directory
         self._max_message_bytes = max_message_bytes
+        self._max_query_context_bytes = max_query_context_bytes
         self._context_handler = context_handler
         self._closed = False
         self._lock = asyncio.Lock()
@@ -86,6 +89,7 @@ class ReplSession:
         tool_names: list[str],
         max_output_bytes: int,
         max_message_bytes: int,
+        max_query_context_bytes: int,
         memory_bytes: int,
         cpu_seconds: int,
         timeout_seconds: float,
@@ -93,6 +97,8 @@ class ReplSession:
     ) -> ReplSession:
         temporary = tempfile.TemporaryDirectory(prefix="rcodex-repl-")
         worker_path = Path(__file__).with_name("_repl_worker.py")
+        # JSON can escape each context byte sixfold. Keep ordinary protocol overhead separate.
+        message_limit = max(CONTEXT_MESSAGE_BYTES, max_message_bytes) + 6 * max_query_context_bytes
         environment = {
             "LANG": "C.UTF-8",
             "PATH": os.defpath,
@@ -112,12 +118,13 @@ class ReplSession:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
                 preexec_fn=_worker_limits(memory_bytes, cpu_seconds),
-                limit=max(CONTEXT_MESSAGE_BYTES, max_message_bytes),
+                limit=message_limit,
             )
             session = cls(
                 process=process,
                 temporary_directory=temporary,
-                max_message_bytes=max(CONTEXT_MESSAGE_BYTES, max_message_bytes),
+                max_message_bytes=message_limit,
+                max_query_context_bytes=max_query_context_bytes,
                 context_handler=context_handler,
             )
             await session._write(
@@ -125,6 +132,7 @@ class ReplSession:
                     "type": "initialize",
                     "tool_names": tool_names,
                     "max_output_bytes": max_output_bytes,
+                    "max_query_context_bytes": max_query_context_bytes,
                 }
             )
             ready = await asyncio.wait_for(session._read(), timeout=timeout_seconds)
@@ -231,6 +239,7 @@ class ReplSession:
                                 mode = CallMode(raw_mode)
                                 prompts = message.get("prompts")
                                 model = message.get("model")
+                                contexts = message.get("contexts")
                                 if not isinstance(request_id, str):
                                     raise ValueError("query request_id must be a string")
                                 if not isinstance(prompts, list) or not all(
@@ -240,7 +249,41 @@ class ReplSession:
                                 prompt_count = len(prompts)
                                 if model is not None and not isinstance(model, str):
                                     raise ValueError("query model must be a string or None")
-                                values, results = await query_handler(mode, prompts, model)
+                                if (
+                                    not isinstance(contexts, list)
+                                    or len(contexts) != len(prompts)
+                                    or not all(
+                                        context is None or isinstance(context, str)
+                                        for context in contexts
+                                    )
+                                ):
+                                    raise ValueError(
+                                        "contexts must contain text or None per prompt"
+                                    )
+                                if mode != CallMode.recursive and any(
+                                    context is not None for context in contexts
+                                ):
+                                    raise ValueError(
+                                        "only recursive queries accept supplied context"
+                                    )
+                                total = 0
+                                for context in contexts:
+                                    if context is not None:
+                                        if "\x00" in context:
+                                            raise ValueError(
+                                                "context must not contain NUL characters"
+                                            )
+                                        try:
+                                            total += len(context.encode("utf-8"))
+                                        except UnicodeEncodeError:
+                                            raise ValueError(
+                                                "context must be valid UTF-8 text"
+                                            ) from None
+                                if total > self._max_query_context_bytes:
+                                    raise ValueError("contexts exceed max_query_context_bytes")
+                                values, results = await query_handler(
+                                    mode, prompts, model, contexts
+                                )
                                 calls.extend(results)
                                 await self._write(
                                     {

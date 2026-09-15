@@ -63,6 +63,7 @@ class RunErrorCode(StrEnum):
     invalid_model_output = "invalid-model-output"
     oversized_model_output = "oversized-model-output"
     context_integrity = "context-integrity"
+    context_limit = "context-limit"
     manifest = "manifest"
     artifact_write = "artifact-write"
     cleanup = "cleanup"
@@ -120,6 +121,7 @@ class DelegateRequest(StrictModel):
     call_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     mode: Literal[CallMode.leaf, CallMode.recursive]
     task: str = Field(min_length=1, max_length=16_384)
+    context: str | None = Field(default=None, max_length=16_777_216)
     model: str | None = Field(default=None, min_length=1, max_length=255)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
 
@@ -190,6 +192,8 @@ class RunLimits(StrictModel):
     tool_timeout_seconds: float = Field(gt=0, le=3600)
     max_manifest_entries: int = Field(ge=1, le=999_999)
     max_context_bytes: int = Field(ge=1, le=1_099_511_627_776)
+    max_query_context_bytes: int = Field(ge=1, le=16_777_216)
+    max_total_child_context_bytes: int = Field(ge=1, le=1_073_741_824)
     max_final_result_bytes: int = Field(ge=1024, le=1_048_576)
     max_repl_code_bytes: int = Field(ge=1024, le=1_048_576)
     max_repl_output_bytes: int = Field(ge=1024, le=16_777_216)
@@ -388,6 +392,8 @@ class NodeRecord(StrictModel):
     requested_mode: CallMode
     executed_mode: CallMode
     task: str = Field(min_length=1, max_length=16_384)
+    context_manifest: str = Field(min_length=1, max_length=4096)
+    context_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     model: str | None = Field(default=None, min_length=1, max_length=255)
     reasoning_effort: str = Field(min_length=1, max_length=32)
     status: NodeStatus
