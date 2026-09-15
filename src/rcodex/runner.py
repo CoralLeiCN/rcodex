@@ -88,6 +88,7 @@ from rcodex.prompts import (
     prompt_sha256,
 )
 from rcodex.repl import ReplError, ReplExecution, ReplSession, ReplTimeoutError
+from rcodex.repl_context import ContextReader
 from rcodex.run_inputs import (
     InvocationError,
     resolve_run_paths,
@@ -370,6 +371,7 @@ class _RunState:
     session_semaphores: list[asyncio.Semaphore]
     reservation_lock: asyncio.Lock
     manifest: ContextManifest | None = None
+    context_reader: ContextReader | None = None
     nodes: dict[str, _MutableNode] = field(default_factory=dict)
     node_sequence: int = 0
     persistent_session_safe: bool = True
@@ -823,6 +825,7 @@ class RecursiveRunner:
         )
         assert root is not None
         if root_mode == CallMode.recursive:
+            state.context_reader = ContextReader(manifest)
             payload = await self._run_repl_session_node(
                 state,
                 root,
@@ -1031,7 +1034,34 @@ class RecursiveRunner:
                 self._persist_session_thread(state, session.thread_id)
 
             tools = state.tools if node.depth == 0 else state.sub_tools
+
+            async def read_context(arguments: dict[str, Any]) -> dict[str, Any]:
+                assert state.context_reader is not None
+                cancel_event = Event()
+                try:
+                    async with _deadline_permit(state, state.tool_semaphore, node.deadline):
+                        value = await asyncio.to_thread(
+                            state.context_reader.request,
+                            arguments,
+                            deadline=min(state.deadline, node.deadline),
+                            cancel_event=cancel_event,
+                        )
+                    state.remaining(deadline=node.deadline)
+                    metadata = (
+                        {key: value[key] for key in ("context_entry_id", "offset", "next_offset")}
+                        if "context_entry_id" in value
+                        else {
+                            "entry_count": len(value["entries"]),
+                            "next_offset": value["next_offset"],
+                        }
+                    )
+                    state.event("context.accessed", metadata, node=node)
+                    return value
+                finally:
+                    cancel_event.set()
+
             repl = await ReplSession.start(
+                context_handler=read_context,
                 tool_names=[definition["name"] for definition in tools.definitions()],
                 max_output_bytes=state.config.max_repl_output_bytes,
                 max_message_bytes=2

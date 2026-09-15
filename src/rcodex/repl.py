@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from rcodex.models import CallMode, CallResult
+from rcodex.repl_context import CONTEXT_MESSAGE_BYTES, ContextAccessError
 
 QueryHandler = Callable[
     [CallMode, list[str], str | None], Awaitable[tuple[list[str], list[CallResult]]]
 ]
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[tuple[Any, CallResult]]]
+ContextHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class ReplError(RuntimeError):
@@ -68,10 +70,12 @@ class ReplSession:
         process: asyncio.subprocess.Process,
         temporary_directory: tempfile.TemporaryDirectory[str],
         max_message_bytes: int,
+        context_handler: ContextHandler,
     ) -> None:
         self._process = process
         self._temporary_directory = temporary_directory
         self._max_message_bytes = max_message_bytes
+        self._context_handler = context_handler
         self._closed = False
         self._lock = asyncio.Lock()
 
@@ -85,6 +89,7 @@ class ReplSession:
         memory_bytes: int,
         cpu_seconds: int,
         timeout_seconds: float,
+        context_handler: ContextHandler,
     ) -> ReplSession:
         temporary = tempfile.TemporaryDirectory(prefix="rcodex-repl-")
         worker_path = Path(__file__).with_name("_repl_worker.py")
@@ -107,12 +112,13 @@ class ReplSession:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
                 preexec_fn=_worker_limits(memory_bytes, cpu_seconds),
-                limit=max(64 * 1024, max_message_bytes),
+                limit=max(CONTEXT_MESSAGE_BYTES, max_message_bytes),
             )
             session = cls(
                 process=process,
                 temporary_directory=temporary,
-                max_message_bytes=max(64 * 1024, max_message_bytes),
+                max_message_bytes=max(CONTEXT_MESSAGE_BYTES, max_message_bytes),
+                context_handler=context_handler,
             )
             await session._write(
                 {
@@ -195,6 +201,26 @@ class ReplSession:
                     while True:
                         message = await self._read()
                         message_type = message.get("type")
+                        if message_type == "context":
+                            request_id = message.get("request_id")
+                            arguments = message.get("arguments")
+                            if not isinstance(request_id, str) or not isinstance(arguments, dict):
+                                raise ReplError("invalid context RPC request")
+                            try:
+                                value = await self._context_handler(arguments)
+                            except ContextAccessError as exc:
+                                await self._write(
+                                    {
+                                        "type": "rpc_result",
+                                        "request_id": request_id,
+                                        "error": str(exc),
+                                    }
+                                )
+                            else:
+                                await self._write(
+                                    {"type": "rpc_result", "request_id": request_id, "value": value}
+                                )
+                            continue
                         if message_type == "query":
                             request_id = message.get("request_id")
                             prompt_count = 1

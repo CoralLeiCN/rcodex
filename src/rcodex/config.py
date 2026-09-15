@@ -230,9 +230,13 @@ class RunConfig:
             (
                 "max_calls_per_iteration",
                 self.max_calls_per_iteration,
-                "controller-backed calls admitted during one REPL turn",
+                "model-query/custom-tool calls admitted during one REPL turn",
             ),
-            ("max_calls_per_node", self.max_calls_per_node, "admitted calls over one node"),
+            (
+                "max_calls_per_node",
+                self.max_calls_per_node,
+                "admitted model-query/custom-tool calls",
+            ),
             ("max_total_nodes", self.max_total_nodes, "controller-reserved run-wide nodes"),
             ("max_concurrency", self.max_concurrency, "active Codex turns"),
             ("max_batch_size", self.max_batch_size, "top-level completion batch admission"),

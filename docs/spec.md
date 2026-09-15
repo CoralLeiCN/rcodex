@@ -2,7 +2,7 @@
 
 - Status: authoritative for the current inference runtime
 - Version: 1.0
-- Date: 2026-09-01
+- Date: 2026-09-15
 - Target platforms: macOS and Linux
 
 ## 1. Scope and authority
@@ -29,6 +29,7 @@ execution substrate:
 | RLM behavior | rcodex implementation |
 | --- | --- |
 | Keep large context outside the root model window | Keep a caller-supplied directory on disk and give Codex a content-free manifest. |
+| Programmatically inspect and transform context | Inject a lazy `context` proxy into every recursive REPL; controller reads deliver bounded text directly to Python variables. |
 | Root REPL loop | Retain one Codex thread and one persistent restricted Python worker for that recursive node. |
 | Execute a root-produced program | Extract fenced `repl` blocks and execute them in the node's worker, never in the controller process. |
 | `llm_query` | Make a synchronous worker-to-controller RPC that starts one fresh terminal Codex leaf and returns its answer string to the running Python block. |
@@ -189,6 +190,52 @@ and every final payload's canonical strict JSON size. Recursive Codex response s
 separately as REPL code. Unknown fields, wrong types, invalid evidence, empty output, or oversized
 output fail the boundary.
 
+### 4.4 REPL context interface
+
+Every recursive node receives a built-in `context` object. It uses a dedicated worker-to-controller
+RPC channel, independent of custom tools, to expose only the run's manifest-backed files:
+
+```python
+context.files()  # lazy iterator of manifest entry dictionaries
+context.read(entry_id, offset=0, max_bytes=65536)  # one chunk dictionary
+context.chunks(entry_id, max_bytes=65536)  # lazy iterator of chunk dictionaries
+```
+
+`files()` yields entries in manifest order with `id`, `relative_path`, `bytes`, `sha256`,
+`media_type`, and `line_count`. It retrieves pages automatically: at most 100 entries and
+64 KiB of serialized entry metadata per page, excluding the small page wrapper.
+
+`read()` accepts an exact manifest ID, a zero-based byte offset from zero through the file's
+size, and a `max_bytes` integer from 4 through 65,536. It returns `context_entry_id`, `path`,
+`offset`, `next_offset`, `eof`, and `text`. Offsets count UTF-8 bytes, not Python characters.
+A read ends before a partial trailing code point; use `next_offset` to continue. An offset
+inside a code point is rejected. Reading at EOF returns empty text and `eof=True`.
+`chunks()` starts at zero and follows `next_offset` through EOF, including one empty chunk for
+an empty file. Chunks can split lines; programs must carry partial lines and count newlines when
+producing line-based evidence. File IDs and paths remain the existing evidence anchors.
+
+The controller opens only manifest files, rejects symlinks in paths below the context root,
+and rejects non-regular files and observed file-size changes. Reads use directory descriptors
+and do not grant filesystem APIs to the worker. Text is decoded strictly as UTF-8. Each read
+loads at most 64 KiB, without caching or loading the whole corpus. The existing final manifest
+rescan remains the success-time integrity check; individual reads do not rehash whole files.
+
+Context requests share the tool semaphore (`max_concurrency`) and node/run deadlines. File I/O
+runs off the asyncio event loop and receives a cooperative cancellation signal. Cancellation
+stops waiting immediately; an in-progress OS read cannot be forcibly interrupted, but the worker
+thread checks cancellation before and after each bounded read. These requests do not consume
+model-query/custom-tool call slots, node reservations, or subcall callbacks, and remain available
+during forced finalization and with `orchestrator=False`. Invalid requests or unavailable files
+raise a catchable `RuntimeError` inside Python; an uncaught error follows ordinary REPL error
+handling. Context RPC transport allows at least 512 KiB to accommodate JSON escaping of a bounded
+read; this does not increase model-feedback or final-result limits.
+
+Returned text stays in Python variables and is not automatically included in model feedback or
+call-result artifacts. Explicit printing, final answers, or subsequent model/custom-tool calls
+can expose it through their existing output paths. Content-free `context.accessed` events record
+successful enumeration/read operations. This interface does not change native Codex filesystem
+access, child task-string limits, or the shared context directory used by recursive children.
+
 ## 5. Execution strategies and REPL protocol
 
 `RunStrategy` has exactly two values: `direct` and `recursive`.
@@ -214,6 +261,9 @@ across the node's later turns, so a node can retain and transform results progra
 The injected interface is:
 
 ```python
+context.files() -> Iterator[dict]
+context.read(entry_id, offset=0, max_bytes=65536) -> dict
+context.chunks(entry_id, max_bytes=65536) -> Iterator[dict]
 llm_query(prompt, model=None) -> str
 llm_query_batched(prompts, model=None) -> list[str]
 rlm_query(prompt, model=None) -> str
@@ -316,9 +366,9 @@ the local Python computation and registered custom tools remain available.
 
 Within a node, calls made by one batched query function are started together; separate scalar
 calls execute synchronously in Python program order. Separate run-wide semaphores, each bounded
-by `max_concurrency`, limit active Codex turns and active controller-tool calls. Waiting parents
-hold neither permit. Per-depth retained-session quotas are described in section 5.2. A lock
-serializes run-wide node reservation. Node IDs therefore express admission order, while child
+by `max_concurrency`, limit active Codex turns and active controller-tool/context requests.
+Waiting parents hold neither permit. Per-depth retained-session quotas are described in section 5.2.
+A lock serializes run-wide node reservation. Node IDs therefore express admission order, while child
 completion order may differ. Batched returned strings and artifact call results preserve request
 order.
 
@@ -359,8 +409,8 @@ batch sequence.
 | `max_tool_result_bytes` | 64 KiB | 256 B to 1 MiB | Hard JSON serialization bound |
 | `max_depth` | 1 | 0 to 16 | Hard terminal-depth conversion |
 | `max_iterations` | 30 | 1 to 100 | Hard ordinary turns plus one finalization turn |
-| `max_calls_per_iteration` | 8 | 1 to 32 | Hard admitted RPC calls per REPL turn |
-| `max_calls_per_node` | 64 | 1 to 1,024 | Hard cumulative admitted calls |
+| `max_calls_per_iteration` | 8 | 1 to 32 | Hard admitted model-query/custom-tool calls per REPL turn |
+| `max_calls_per_node` | 64 | 1 to 1,024 | Hard cumulative admitted model-query/custom-tool calls |
 | `max_total_nodes` | 128 | 1 to 4,096 | Hard run-wide reservation |
 | `max_concurrency` | 4 | 1 to 64 | Hard batch-run, per-depth session, active-turn, and tool caps |
 | `max_batch_size` | 256 | 1 to 4,096 | Hard top-level Python batch admission |
@@ -553,6 +603,9 @@ prompt. Every REPL and finalization iteration records the SHA-256 of the exact p
 executed code blocks, captured stdout/stderr, visible variable names and types, any typed final
 payload, ordered call results, usage, timing, validation error, phase, and compaction-completion
 flag.
+Successful context requests emit `context.accessed` events: enumeration records the entry count
+and next page offset; reads record the manifest ID and start/next byte offsets. These events
+contain no file body, and context responses do not become `CallResult` entries.
 `events.jsonl` is append-only, sequence-numbered, fsynced, and bounded to 16 KiB per event.
 The request artifact stores hashes, rather than raw values, for system/prologue guidance and
 root/sub tool definitions. Runtime metadata retains a compact prompt-template/hash summary, but
@@ -703,7 +756,7 @@ tools, unsupported requests, and unexpected controller errors. SDK runtime failu
 transient where appropriate; model prose cannot set retryability. Unexpected exceptions persist
 only their type name, not an uncontrolled message or traceback.
 
-Cancellation interrupts an active Codex turn where possible, signals an active manifest worker,
+Cancellation interrupts an active Codex turn where possible, signals active manifest/context workers,
 closes SDK clients within the cleanup boundary, writes node/run terminal state and events, then
 propagates cancellation to the caller.
 
@@ -742,11 +795,12 @@ Context files are always untrusted data, not instructions. Codex is told not to 
 through built-in agents, browse, use connectors/MCP, or request escalation. The controller alone
 writes state/output artifacts outside the context. Model-authored Python runs in a separate
 `python -I -S` worker with a scrubbed environment, private temporary working directory,
-restricted AST and builtins, no imports or file APIs, bounded output,
+restricted AST and builtins, no imports or direct file APIs, bounded output,
 process/file-descriptor/CPU limits, and an address-space limit on Linux. This is defense in
 depth, not a general hostile-code container; macOS does not enforce the configured address-space
-cap. Trusted Python tools are an explicit caller extension of this boundary and may perform
-actions according to their handler authority.
+cap. The built-in context proxy grants only controller-mediated reads of manifest files as
+specified in section 4.4. Trusted Python tools are an explicit caller extension of this boundary
+and may perform actions according to their handler authority.
 
 ## 13. Verification and non-goals
 

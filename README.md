@@ -9,8 +9,10 @@ The runtime is inference-only. It does not include or require RLM training code.
 For recursive runs, each retained Codex node programs a persistent, restricted Python REPL. The
 injected `llm_query*` and `rlm_query*` functions synchronously return child answer strings, so
 Python can inspect, transform, branch on, aggregate, and make dependent calls before submitting
-the final answer. Strict JSON remains the internal RPC/artifact/result boundary; it is not the
-root Codex programming language.
+the final answer. The built-in `context` object lazily enumerates manifest files and reads UTF-8
+chunks directly into Python variables, without copying source text through Codex messages.
+Strict JSON remains the internal RPC/artifact/result boundary; it is not the root Codex
+programming language.
 
 Implementation baseline: Python 3.11+, `openai-codex==0.147.0`, `AsyncCodex`, and an external
 Codex 0.153.4 executable selected through the SDK's supported `codex_bin` configuration.
@@ -157,6 +159,22 @@ iteration/subcall callbacks. With `RunConfig(persistent=True)`, the facade preal
 exposes `rlm.session_id`; only one process may own that session while a completion is active.
 See the [implemented specification](docs/spec.md#9-python-api).
 
+Inside a recursive node, model-authored Python can compute directly over the corpus:
+
+```python
+characters = 0
+for entry in context.files():
+    for chunk in context.chunks(entry["id"]):
+        characters += len(chunk["text"])
+submit_answer(f"The corpus contains {characters} Unicode characters.")
+```
+
+`context.read(entry_id, offset=0, max_bytes=65536)` reads a bounded portion; `context.chunks`
+iterates through a file and `context.files` paginates manifest metadata. Reads preserve UTF-8
+characters and return file IDs, paths, and byte offsets for source tracking. They share the
+controller's concurrency and deadline limits without consuming model-call slots. See the
+[context interface](docs/spec.md#44-repl-context-interface) for exact bounds and return fields.
+
 ## Security boundary
 
 Codex runs with a read-only sandbox, denied approvals, and requested disabling of built-in
@@ -170,10 +188,11 @@ Trusted Python tools registered through the API are controller calls, not MCP to
 the rcodex process and therefore belong inside the caller's trust boundary.
 
 Model-authored Python never runs in the controller process. It runs in a separate `python -I -S`
-worker with restricted syntax and builtins, no imports or file APIs, bounded output and resources,
-and a private temporary working directory. This is defense in depth rather than a portable
-hostile-code container; the configured address-space limit is enforced on Linux and reported as
-unsupported on macOS.
+worker with restricted syntax and builtins, no imports or direct file APIs, bounded output and
+resources, and a private temporary working directory. This is defense in depth rather than a
+portable hostile-code container; the configured address-space limit is enforced on Linux and reported as
+unsupported on macOS. The built-in context interface uses controller RPC to read manifest files;
+the worker receives text, never a file handle or arbitrary filesystem access.
 
 ## Documentation
 
@@ -183,6 +202,7 @@ unsupported on macOS.
   limits, persistence, artifacts, and security contract.
 - [RLM, rcodex, and Codex comparison](docs/rlm-rcodex-codex-comparison.md) — how roots, leaves,
   recursive children, parallelism, depth boundaries, and tree recording differ.
+- [Design backlog](docs/backlog.md) — prioritized RLM alignment improvements and acceptance criteria.
 - [References](references/README.md) — pinned RLM, Codex, and technology sources.
 
 ## Acknowledgements
