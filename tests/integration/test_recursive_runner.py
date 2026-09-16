@@ -989,9 +989,15 @@ async def test_dependent_delegation_runs_in_multiple_waves(
     assert result.payload is not None and result.payload.answer == "synthesized"
     assert len(result.nodes) == 3
     root_turns = adapter.sessions[0].turn_requests
-    assert "first-result" in root_turns[1].prompt
+    assert "first-result" not in root_turns[1].prompt
     assert "second-result" not in root_turns[1].prompt
-    assert "second-result" in root_turns[2].prompt
+    assert "second-result" not in root_turns[2].prompt
+    assert _iteration(result, "node_000001", 0)["results"][0]["payload"]["answer"] == (
+        "first-result"
+    )
+    assert _iteration(result, "node_000001", 1)["results"][0]["payload"]["answer"] == (
+        "second-result"
+    )
     assert _iteration(result, "node_000001", 0)["prompt_sha256"] == prompt_sha256(
         root_turns[0].prompt
     )
@@ -1006,6 +1012,198 @@ async def test_dependent_delegation_runs_in_multiple_waves(
         "node_000002",
         "node_000003",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query", ["llm_query", "rlm_query", "llm_query_batched", "rlm_query_batched"]
+)
+async def test_unprinted_results_stay_in_python_and_artifacts(
+    context_root: Path, tmp_path: Path, query: str
+) -> None:
+    batched = query.endswith("_batched")
+    answers = [
+        f"visible-child-{index}|unprinted-child-{index}" for index in range(2 if batched else 1)
+    ]
+    tool_value: dict[str, Any] = {"visible": "visible-tool", "nested": ["unprinted-tool" * 1000]}
+    evidence = [
+        {
+            "context_entry_id": "file_000001",
+            "path": "notes.txt",
+            "line_start": 1,
+            "line_end": 1,
+            "description": "unprinted-evidence",
+        }
+    ]
+    payloads = [
+        {
+            **json.loads(_final_payload(answer)),
+            "evidence": evidence,
+            "uncertainties": ["unprinted-uncertainty"],
+        }
+        for answer in answers
+    ]
+    argument = '["first", "second"]' if batched else '"first"'
+    expression = f"{query}({argument})"
+    initial = f"children = {expression}" if batched else f"children = [{expression}]"
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(response=f"```repl\n{initial}\n```\n```repl\nstored = lookup()\n```"),
+                _Step(
+                    response="""```repl
+print(children[0].split("|")[0])
+print(stored["visible"])
+dependent = llm_query(children[-1])
+combined = combine(children=children, stored=stored, dependent=dependent)
+```"""
+                ),
+                _Step(response="```repl\nsubmit_answer(combined)\n```"),
+            ]
+        ]
+        + (
+            [
+                [
+                    _Step(
+                        response=f"""```repl
+answer['content'] = {payload!r}
+answer['ready'] = True
+```"""
+                    )
+                ]
+                for payload in payloads
+            ]
+            if query.startswith("rlm_")
+            else []
+        ),
+        leaf_steps=(
+            []
+            if query.startswith("rlm_")
+            else [_Step(response=json.dumps(payload)) for payload in payloads]
+        )
+        + [_Step(response=_final_payload("unprinted-dependent"))],
+    )
+    received: list[dict[str, Any]] = []
+
+    def combine(arguments: dict[str, Any]) -> str:
+        received.append(arguments)
+        return "|".join(
+            arguments["children"] + arguments["stored"]["nested"] + [arguments["dependent"]]
+        )
+
+    result, _ = await RecursiveRunner(
+        lambda: adapter, custom_tools={"lookup": tool_value, "combine": combine}
+    ).run(
+        task="retain intermediate values",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(),
+    )
+
+    assert result.status == RunStatus.succeeded
+    assert received == [
+        {"children": answers, "stored": tool_value, "dependent": "unprinted-dependent"}
+    ]
+    assert json.dumps(answers[-1]) in adapter.leaf_requests[-1].prompt
+    complete_answer = "|".join(answers + tool_value["nested"] + ["unprinted-dependent"])
+    assert result.payload is not None and result.payload.answer == complete_answer
+    first = _iteration(result, "node_000001", 0)
+    assert [call["payload"] for call in first["results"][:-1]] == payloads
+    assert first["results"][-1]["value"] == tool_value
+    assert _iteration(result, "node_000001", 1)["results"][-1]["value"] == complete_answer
+    turns = adapter.sessions[0].turn_requests
+    for turn in turns[1:]:
+        assert "unprinted-" not in turn.prompt
+        calls = json.loads(turn.prompt.splitlines()[1])[-1]["calls"]
+        assert all(call["status"] == "succeeded" for call in calls)
+        assert all(
+            set(call)
+            == {
+                "call_id",
+                "canonical_id",
+                "requested_mode",
+                "executed_mode",
+                "status",
+                "child_node_id",
+            }
+            for call in calls
+        )
+    assert "visible-child-" not in turns[1].prompt
+    assert "visible-tool" not in turns[1].prompt
+    initial_feedback = json.loads(turns[1].prompt.splitlines()[1])
+    assert initial_feedback[0]["status"] == initial_feedback[1]["status"] == "succeeded"
+    assert initial_feedback[0]["stdout"] == initial_feedback[1]["stdout"] == ""
+    assert initial_feedback[0]["variable_types"] == {"children": "list"}
+    assert initial_feedback[1]["variable_types"] == {"children": "list", "stored": "dict"}
+    printed_feedback = json.loads(turns[2].prompt.splitlines()[1])
+    assert printed_feedback[0]["stdout"] == "visible-child-0\nvisible-tool\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_limit", [1024, 4096])
+async def test_printed_result_feedback_is_bounded_without_truncating_python_values(
+    context_root: Path, tmp_path: Path, output_limit: int
+) -> None:
+    value = '🙂\\"\n' * 6000 + "unprinted-tail"
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(response="```repl\nstored = lookup()\n```"),
+                _Step(response="```repl\nprint(stored[:20000])\n```"),
+                _Step(response="```repl\nsubmit_answer(stored)\n```"),
+            ]
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter, custom_tools={"lookup": value}).run(
+        task="print a bounded selection",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_repl_output_bytes=output_limit),
+    )
+
+    assert result.status == RunStatus.succeeded
+    assert result.payload is not None and result.payload.answer == value
+    assert _iteration(result, "node_000001", 0)["results"][0]["value"] == value
+    turns = adapter.sessions[0].turn_requests
+    for turn in turns[1:]:
+        assert len(turn.prompt.encode("utf-8")) <= output_limit
+        assert "unprinted-tail" not in turn.prompt
+    assert "🙂" not in turns[1].prompt
+    feedback = json.loads(turns[2].prompt.splitlines()[1])[0]
+    assert feedback["stdout"] and value.startswith(feedback["stdout"])
+    assert feedback["stdout_truncated"] is True
+    execution = _iteration(result, "node_000001", 1)["executions"][0]
+    assert execution["stdout_truncated"] is True
+    assert len(execution["stdout"].encode("utf-8")) <= output_limit
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_limit", [1024, 4096])
+async def test_repl_feedback_retains_bounded_error_diagnostics(
+    context_root: Path, tmp_path: Path, output_limit: int
+) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(response='```repl\nraise ValueError("diagnostic-" * 2000)\n```'),
+                _Step(response=_final_repl("recovered")),
+            ]
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter).run(
+        task="recover from a Python error",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_repl_output_bytes=output_limit),
+    )
+
+    assert result.status == RunStatus.succeeded
+    feedback = adapter.sessions[0].turn_requests[1].prompt
+    assert len(feedback.encode("utf-8")) <= output_limit
+    execution = json.loads(feedback.splitlines()[1])[0]
+    assert execution["status"] == "failed"
+    assert execution["stderr"].startswith("ValueError: diagnostic-")
+    assert execution["stderr_truncated"] is True
 
 
 @pytest.mark.asyncio
@@ -1091,7 +1289,8 @@ async def test_call_wave_preserves_order_when_one_leaf_fails(
     assert feedback.index(record["results"][0]["call_id"]) < feedback.index(
         record["results"][1]["call_id"]
     )
-    assert "slow-result" in feedback
+    assert "slow-result" not in feedback
+    assert record["results"][0]["payload"]["answer"] == "slow-result"
     assert "Codex SDK failure during turn_run: RuntimeError" in feedback
 
 
@@ -1164,12 +1363,14 @@ async def test_max_iterations_gets_one_finalization_turn(
     adapter = _FakeAdapter(
         root_scripts=[
             [
-                _Step(response=_repl_continue("still working", [_tool("lookup", "constant")])),
-                _Step(response=_final_repl("forced-final")),
+                _Step(response="```repl\nstored = constant()\n```"),
+                _Step(response="```repl\nsubmit_answer(stored)\n```"),
             ]
         ]
     )
-    result, _ = await RecursiveRunner(lambda: adapter, custom_tools={"constant": 7}).run(
+    result, _ = await RecursiveRunner(
+        lambda: adapter, custom_tools={"constant": "unprinted-forced-final"}
+    ).run(
         task="must finalize",
         context=context_root,
         state_directory=tmp_path / "state",
@@ -1177,7 +1378,8 @@ async def test_max_iterations_gets_one_finalization_turn(
     )
 
     assert result.status == RunStatus.succeeded
-    assert result.payload is not None and result.payload.answer == "forced-final"
+    assert result.payload is not None and result.payload.answer == "unprinted-forced-final"
+    assert "unprinted-forced-final" not in adapter.sessions[0].turn_requests[-1].prompt
     assert result.nodes[0].iterations == 2
     assert adapter.sessions[0].turn_requests[-1].phase.endswith("_finalization")
     assert _iteration(result, "node_000001", 1)["phase"] == "finalization"
@@ -1541,7 +1743,9 @@ async def test_tool_handler_exception_is_failed_call_and_parent_can_recover(
     assert call["status"] == CallStatus.failed
     assert call["error"]["code"] == RunErrorCode.tool_runtime
     assert call["error"]["message"] == "tool handler failed: ValueError"
-    assert "sensitive handler detail" not in adapter.sessions[0].turn_requests[1].prompt
+    feedback = adapter.sessions[0].turn_requests[1].prompt
+    assert "tool handler failed: ValueError" in feedback
+    assert "sensitive handler detail" not in feedback
 
 
 @pytest.mark.asyncio

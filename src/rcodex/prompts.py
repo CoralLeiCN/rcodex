@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-PROMPT_VERSION = "recursive-codex-repl-v4"
+PROMPT_VERSION = "recursive-codex-repl-v5"
 
 
 def prompt_sha256(prompt: str) -> str:
@@ -140,8 +140,7 @@ The REPL provides:
 
 Context reads are read-only and restricted to manifest IDs. They preserve UTF-8 characters;
 use next_offset for continuation. Chunks may split lines. Keep track of newline counts when
-constructing evidence line ranges. No corpus text is included in feedback unless you print it
-or return it through another call. Reads use the node/run deadline and shared tool concurrency,
+constructing evidence line ranges. Reads use the node/run deadline and shared tool concurrency,
 but do not consume model-query or custom-tool call slots. Query instructions have a 16,384-character
 limit. Pass large transformed UTF-8 text separately with rlm_query(..., context=text); the child
 gets its own manifest containing input.txt, readable through context.files/read/chunks. The text
@@ -171,8 +170,11 @@ before one forced finalization turn.
 To finish, call submit_answer(...) or assign a strict result object to answer["content"] and then
 set answer["ready"] = True. Evidence entries must use manifest IDs, exact relative paths, and
 valid line ranges from this node's manifest. Child evidence belongs to the child's manifest;
-use your own source entries when citing original input. Print intermediate values that you want
-to inspect in the next Codex turn.
+use your own source entries when citing original input. Complete query answers, context reads, and
+tool values stay in Python for inspection, dependent calls, and final answers. Feedback contains
+execution and call status, variable names/types, bounded errors, and explicitly printed output.
+It never automatically previews returned values, child evidence, or child uncertainties. Print
+only the portions you want to inspect in the next Codex turn; printed output is bounded.
 
 Available controller tools (call them by name with keyword arguments): {tool_text}
 {orchestration}
@@ -200,8 +202,10 @@ def build_feedback_prompt(
 Remaining admitted calls for this node: {calls_remaining}
 Remaining ordinary REPL turns after this turn: {iterations_remaining}
 
-The Python namespace persists. Use SHOW_VARS() when you need to recall its variable names. Return
-only fenced ```repl code blocks that continue the computation or call submit_answer(...).
+The Python namespace retains complete returned values. Feedback includes only status, variable
+metadata, bounded errors, and explicitly printed output. Print selected values to inspect them;
+print(SHOW_VARS()) lists variable names/types. Return only fenced ```repl code blocks that
+continue the computation or call submit_answer(...).
 """
 
 
