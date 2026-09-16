@@ -1913,18 +1913,19 @@ class RecursiveRunner:
         calls_remaining = max(0, state.config.max_calls_per_node - node.calls)
         iterations_remaining = max(0, state.config.max_iterations - iteration - 1)
 
-        def projected(preview: int) -> list[dict[str, Any]]:
+        def projected(output_chars: int) -> list[dict[str, Any]]:
             items: list[dict[str, Any]] = []
             for index, execution in enumerate(executions):
                 items.append(
                     {
                         "block": index,
-                        "stdout": execution.stdout[:preview],
+                        "status": "failed" if execution.stderr else "succeeded",
+                        "stdout": execution.stdout[:output_chars],
                         "stdout_truncated": execution.stdout_truncated
-                        or len(execution.stdout) > preview,
-                        "stderr": execution.stderr[:preview],
+                        or len(execution.stdout) > output_chars,
+                        "stderr": execution.stderr[:output_chars],
                         "stderr_truncated": execution.stderr_truncated
-                        or len(execution.stderr) > preview,
+                        or len(execution.stderr) > output_chars,
                         "variable_types": execution.variable_types,
                     }
                 )
@@ -1932,20 +1933,20 @@ class RecursiveRunner:
                 items.append(
                     {
                         "calls": [
-                            RecursiveRunner._project_call_result(result, preview)
+                            RecursiveRunner._project_call_result(result, output_chars)
                             for result in results
                         ]
                     }
                 )
             return items
 
-        for preview in (8192, 4096, 2048, 1024, 512, 256, 128, 64, 0):
+        for output_chars in (8192, 4096, 2048, 1024, 512, 256, 128, 64, 0):
             feedback = build_feedback_prompt(
                 iteration=iteration,
-                results=projected(preview),
+                results=projected(output_chars),
                 calls_remaining=calls_remaining,
                 iterations_remaining=iterations_remaining,
-                artifact_path=artifact if preview else None,
+                artifact_path=artifact if output_chars else None,
             )
             if len(feedback.encode("utf-8")) <= state.config.max_repl_output_bytes:
                 return feedback
@@ -2058,7 +2059,8 @@ class RecursiveRunner:
         return result
 
     @staticmethod
-    def _project_call_result(result: CallResult, preview_chars: int) -> dict[str, Any]:
+    def _project_call_result(result: CallResult, diagnostic_chars: int) -> dict[str, Any]:
+        """Expose call status and errors; returned content stays in Python and artifacts."""
         projected: dict[str, Any] = {
             "call_id": result.call_id,
             "canonical_id": result.canonical_id,
@@ -2070,30 +2072,9 @@ class RecursiveRunner:
         if result.error is not None:
             projected["error"] = {
                 "code": result.error.code.value,
-                "message": result.error.message[:preview_chars],
-                "truncated": len(result.error.message) > preview_chars,
+                "message": result.error.message[:diagnostic_chars],
+                "truncated": len(result.error.message) > diagnostic_chars,
             }
-        if result.payload is not None:
-            answer = result.payload.answer
-            projected["payload"] = {
-                "answer_preview": answer[:preview_chars],
-                "answer_truncated": len(answer) > preview_chars,
-                "evidence": (
-                    [item.model_dump(mode="json") for item in result.payload.evidence[:4]]
-                    if preview_chars >= 512
-                    else []
-                ),
-                "uncertainties": (result.payload.uncertainties[:4] if preview_chars >= 512 else []),
-            }
-        if result.executed_mode == CallMode.tool and result.status == CallStatus.succeeded:
-            encoded = json.dumps(
-                result.value,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            projected["value_preview"] = encoded[:preview_chars]
-            projected["value_truncated"] = len(encoded) > preview_chars
         return projected
 
     async def _execute_call(

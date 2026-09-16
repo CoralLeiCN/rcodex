@@ -362,6 +362,31 @@ bound is the smaller of `max_total_nodes` and `1 + max_concurrency * max_depth`.
 session currently owns a Codex process; high depth/concurrency settings must therefore be chosen
 with host capacity in mind.
 
+#### 5.2.1 Model feedback
+
+Complete query answers and custom-tool values remain in Python, including across turns, for
+inspection, transformations, dependent calls, and final answers. Successful calls contribute
+only identifiers, requested/executed modes, child node IDs, and status to model feedback.
+Feedback contains no automatic answer or tool-value previews, child evidence, or child
+uncertainties. Assigning or evaluating a returned value does not display its content.
+
+Each executed block reports its index, execution status (`failed` when stderr is non-empty,
+otherwise `succeeded`), variable names/types, captured stdout/stderr, and truncation flags.
+Explicit `print(...)` output is visible within the configured limits. Uncaught Python errors
+appear as bounded stderr; unsuccessful calls retain their status, error code, bounded message,
+and error-message truncation flag. Error diagnostics may contain values included in exceptions.
+Use `print(SHOW_VARS())` to explicitly display variable names/types.
+
+The worker captures at most `max_repl_output_bytes` UTF-8 bytes per stream. Feedback initially
+projects at most 8,192 characters per stream/error message, reducing those lengths as needed to
+fit the complete encoded prompt within `max_repl_output_bytes`. Truncation flags indicate omitted
+output. Feedback also includes remaining call/turn budgets and, when space permits, the iteration
+artifact path. If metadata alone cannot fit, the node fails with `oversized-model-output`.
+
+These feedback limits do not truncate the values returned to Python. Durable call-result and
+node artifacts retain complete accepted results within `max_tool_result_bytes` and
+`max_final_result_bytes`. Child evidence and uncertainties remain in those artifacts.
+
 ### 5.3 Depth semantics
 
 Root depth is zero. `max_depth` is the depth at which recursive requests become terminal:

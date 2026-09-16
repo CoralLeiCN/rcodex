@@ -35,23 +35,14 @@ See the [implemented contract](spec.md#45-child-specific-external-context).
 
 ## RLM-003: Keep unprinted intermediate results out of model feedback
 
-- Status: Backlog
+- Status: Implemented (2026-09-16)
 - Priority: Medium
 
-Feedback currently includes child-answer and tool-result previews even when Python stores the
-results without printing them. Automatic content previews consume parent context and weaken
-the program's control over which intermediate values the model sees.
+REPL feedback includes execution and call status, variable names/types, bounded error diagnostics,
+and explicitly printed output. Successful child answers, child evidence/uncertainties, and tool
+values contribute no automatic content previews. Complete accepted results remain in Python
+and durable artifacts for dependent calls and final answers.
 
-Keep complete returned values in Python variables and durable artifacts. Default feedback
-should contain bounded explicitly printed output, execution and call status, variable metadata,
-and bounded error diagnostics.
-
-Acceptance criteria:
-
-- Successful unprinted child answers and tool values contribute no content previews to feedback.
-- Explicitly printed values remain visible within the configured feedback limits.
-- Python can inspect complete returned values and use them in dependent calls or final answers;
-  durable artifacts retain the complete results within their configured limits.
-- Tests store a distinctive result without printing it and verify its absence from feedback,
-  then print a selected portion and verify that only the requested bounded output appears.
-- Update feedback prompts, tests, and documentation to reflect the new contract.
+Integration coverage verifies scalar and batched leaf/recursive results, selected printing,
+UTF-8 feedback limits, retained complete values, and failure diagnostics. Prompts explain how
+to inspect stored values explicitly. See the [feedback contract](spec.md#521-model-feedback).

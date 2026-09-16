@@ -181,6 +181,12 @@ characters and return file IDs, paths, and byte offsets for source tracking. The
 controller's concurrency and deadline limits without consuming model-call slots. See the
 [context interface](docs/spec.md#44-repl-context-interface) for exact bounds and return fields.
 
+Query answers and controller-tool values stay in Python variables and durable call artifacts.
+Feedback shows status, variable names/types, bounded errors, and explicitly printed output;
+it does not automatically preview returned content. Use `print(result[:500])` to inspect a
+selected portion of a string, or use the complete value in dependent calls and `submit_answer`.
+See the [feedback contract](docs/spec.md#521-model-feedback) for output limits.
+
 ## Security boundary
 
 Codex runs with a read-only sandbox, denied approvals, and requested disabling of built-in
