@@ -1156,12 +1156,14 @@ class RecursiveRunner:
                         turn.final_response,
                         state.config.max_repl_code_bytes,
                     )
-                    records, results, final_payload = await self._execute_repl_blocks(
+                    final_payload = await self._execute_repl_blocks(
                         state,
                         node,
                         repl,
                         blocks,
                         allow_calls=True,
+                        records=records,
+                        all_results=results,
                     )
                 except _BoundaryError as exc:
                     consecutive_errors += 1
@@ -1209,7 +1211,6 @@ class RecursiveRunner:
                     state.record_prompt("repair", prompt)
                     continue
                 except _WaveInterrupted as interrupted:
-                    results = interrupted.results
                     cause = interrupted.cause
                     if isinstance(cause, asyncio.CancelledError):
                         wave_error = RunError(
@@ -1318,9 +1319,6 @@ class RecursiveRunner:
                     )
                     raise _NodeFailure(error, node.best_partial) from exc
 
-                output = "\n".join(record.stdout for record in records if record.stdout).strip()
-                if output:
-                    node.best_partial = output[-12_000:]
                 failed = any(record.stderr for record in records) or any(
                     result.status != CallStatus.succeeded for result in results
                 )
@@ -1525,12 +1523,14 @@ class RecursiveRunner:
                 turn.final_response,
                 state.config.max_repl_code_bytes,
             )
-            records, results, payload = await self._execute_repl_blocks(
+            payload = await self._execute_repl_blocks(
                 state,
                 node,
                 repl,
                 blocks,
                 allow_calls=False,
+                records=records,
+                all_results=results,
             )
             if payload is None:
                 raise _BoundaryError(
@@ -1653,11 +1653,21 @@ class RecursiveRunner:
         blocks: list[str],
         *,
         allow_calls: bool,
-    ) -> tuple[list[ReplExecutionRecord], list[CallResult], FinalPayload | None]:
+        records: list[ReplExecutionRecord],
+        all_results: list[CallResult],
+    ) -> FinalPayload | None:
         iteration_capacity = state.config.max_calls_per_iteration if allow_calls else 0
-        records: list[ReplExecutionRecord] = []
-        all_results: list[CallResult] = []
-        final_payload: FinalPayload | None = None
+
+        def reject_input(call_id: str, mode: CallMode, error: RunError) -> CallResult:
+            result = self._failed_call(call_id, mode, mode, CallStatus.rejected, error, 0)
+            all_results.append(result)
+            state.event(
+                "call.rejected",
+                {"error_code": error.code.value},
+                node=node,
+                call_id=result.canonical_id,
+            )
+            return result
 
         async def query_handler(
             mode: CallMode, prompts: list[str], model: str | None, contexts: list[str | None]
@@ -1666,32 +1676,56 @@ class RecursiveRunner:
             if mode not in {CallMode.leaf, CallMode.recursive}:
                 raise ValueError("REPL queries support only leaf or recursive modes")
             delegate_mode = cast(Literal[CallMode.leaf, CallMode.recursive], mode)
-            calls = [
-                DelegateRequest(
-                    kind="delegate",
-                    call_id=f"q_{uuid.uuid4().hex}",
-                    mode=delegate_mode,
-                    task=prompt,
-                    context=context,
-                    model=model,
+            call_ids = [f"q_{uuid.uuid4().hex}" for _ in prompts]
+            try:
+                calls = [
+                    DelegateRequest(
+                        kind="delegate",
+                        call_id=call_id,
+                        mode=delegate_mode,
+                        task=prompt,
+                        context=context,
+                        model=model,
+                    )
+                    for call_id, prompt, context in zip(call_ids, prompts, contexts, strict=True)
+                ]
+            except ValidationError as exc:
+                error = RunError(
+                    code=RunErrorCode.invalid_tool_input,
+                    message="query arguments failed validation; no calls in this batch executed",
+                    details={"validation_errors": len(exc.errors())},
                 )
-                for prompt, context in zip(prompts, contexts, strict=True)
-            ]
+                rejected = [reject_input(call_id, mode, error) for call_id in call_ids]
+                return [self._query_value(result) for result in rejected], rejected
             before = node.calls
             capacity = iteration_capacity if state.config.orchestrator else 0
             call_results = await self._execute_repl_calls(state, node, calls, capacity)
+            all_results.extend(call_results)
             iteration_capacity = max(0, iteration_capacity - (node.calls - before))
             values = [self._query_value(result) for result in call_results]
             return values, call_results
 
         async def tool_handler(name: str, arguments: dict[str, Any]) -> tuple[Any, CallResult]:
             nonlocal iteration_capacity
-            call = ToolRequest(
-                kind="tool",
-                call_id=f"t_{uuid.uuid4().hex}",
-                name=name,
-                arguments=arguments,
-            )
+            call_id = f"t_{uuid.uuid4().hex}"
+            try:
+                call = ToolRequest(
+                    kind="tool",
+                    call_id=call_id,
+                    name=name,
+                    arguments=arguments,
+                )
+            except ValidationError as exc:
+                result = reject_input(
+                    call_id,
+                    CallMode.tool,
+                    RunError(
+                        code=RunErrorCode.invalid_tool_input,
+                        message="tool arguments failed validation",
+                        details={"validation_errors": len(exc.errors())},
+                    ),
+                )
+                return None, result
             before = node.calls
             call_results = await self._execute_repl_calls(
                 state,
@@ -1699,18 +1733,26 @@ class RecursiveRunner:
                 [call],
                 iteration_capacity,
             )
+            all_results.extend(call_results)
             iteration_capacity = max(0, iteration_capacity - (node.calls - before))
             result = call_results[0]
             return result.value, result
 
         for code in blocks:
-            execution = await repl.execute(
-                code,
-                timeout_seconds=state.remaining(deadline=node.deadline),
-                query_handler=query_handler,
-                tool_handler=tool_handler,
-            )
-            all_results.extend(execution.calls)
+            try:
+                execution = await repl.execute(
+                    code,
+                    timeout_seconds=state.remaining(deadline=node.deadline),
+                    query_handler=query_handler,
+                    tool_handler=tool_handler,
+                )
+            except _WaveInterrupted as interrupted:
+                all_results.extend(interrupted.results)
+                raise
+            records.append(self._repl_execution_record(execution, None))
+            output = "\n".join(record.stdout for record in records if record.stdout).strip()
+            if output:
+                node.best_partial = output[-12_000:]
             parsed_payload = (
                 self._parse_repl_final(
                     execution.final_payload,
@@ -1720,11 +1762,10 @@ class RecursiveRunner:
                 if execution.final_payload is not None
                 else None
             )
-            records.append(self._repl_execution_record(execution, parsed_payload))
             if parsed_payload is not None:
-                final_payload = parsed_payload
-                break
-        return records, all_results, final_payload
+                records[-1].final_payload = parsed_payload
+                return parsed_payload
+        return None
 
     async def _execute_repl_calls(
         self,

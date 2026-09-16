@@ -1846,6 +1846,119 @@ async def test_compaction_threshold_requests_session_compaction_and_records_it(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expression", "rejected_count"),
+    [
+        ('llm_query("a" * 16385)', 1),
+        ('llm_query_batched(["valid", "a" * 16385])', 2),
+        ('lookup({str(i): i for i in range(129)})', 1),
+    ],
+)
+async def test_invalid_call_arguments_are_recorded_and_reach_error_limit(
+    context_root: Path, tmp_path: Path, expression: str, rejected_count: int
+) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[
+            [
+                _Step(response=f"```repl\nvalue = {expression}\n```"),
+                _Step(response=_final_repl("late")),
+            ]
+        ]
+    )
+    result, _ = await RecursiveRunner(lambda: adapter, custom_tools={"lookup": "unused"}).run(
+        task="reject invalid arguments",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_errors=1),
+    )
+
+    assert result.status == RunStatus.failed
+    assert result.error is not None and result.error.code == RunErrorCode.error_limit
+    assert len(adapter.sessions[0].turn_requests) == 1
+    assert adapter.leaf_requests == []
+    assert result.nodes[0].calls == 0
+    record = _iteration(result, "node_000001", 0)
+    assert record["executions"][0]["stderr"] == ""
+    assert len(record["results"]) == rejected_count
+    assert len({item["canonical_id"] for item in record["results"]}) == rejected_count
+    for item in record["results"]:
+        assert item["status"] == CallStatus.rejected
+        assert item["error"]["code"] == RunErrorCode.invalid_tool_input
+        assert item["child_node_id"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finalization", [False, True])
+@pytest.mark.parametrize("separate_blocks", [False, True])
+async def test_invalid_final_payload_preserves_completed_work(
+    context_root: Path, tmp_path: Path, finalization: bool, separate_blocks: bool
+) -> None:
+    work = 'value = lookup()\nprint("completed work")'
+    invalid = 'submit_answer("candidate", evidence=[{}])'
+    program = (
+        f"```repl\n{work}\n```\n```repl\n{invalid}\n```"
+        if separate_blocks
+        else f"```repl\n{work}\n{invalid}\n```"
+    )
+    steps = ([_Step(response="```repl\nvalue = None\n```")] if finalization else []) + [
+        _Step(response=program)
+    ]
+    adapter = _FakeAdapter(root_scripts=[steps])
+    result, _ = await RecursiveRunner(lambda: adapter, custom_tools={"lookup": "retained"}).run(
+        task="retain trace when the answer is invalid",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(max_iterations=1, max_errors=1),
+    )
+
+    assert result.status == RunStatus.partial
+    assert result.best_partial_answer == "completed work"
+    record = _iteration(result, "node_000001", int(finalization))
+    assert record["phase"] == ("finalization" if finalization else "repl")
+    assert record["error"]["code"] == RunErrorCode.invalid_model_output
+    assert len(record["executions"]) == (2 if separate_blocks else 1)
+    assert record["executions"][0]["stdout"] == "completed work\n"
+    assert record["executions"][-1]["final_payload"] is None
+    assert record["executions"][-1]["code"].endswith(invalid)
+    assert len(record["results"]) == 1
+    call = record["results"][0]
+    if finalization:
+        assert call["status"] == CallStatus.rejected
+        assert call["error"]["code"] == RunErrorCode.call_limit
+    else:
+        assert call["status"] == CallStatus.succeeded
+        assert call["value"] == "retained"
+
+
+@pytest.mark.asyncio
+async def test_completed_call_is_retained_when_a_later_call_crashes_controller(
+    context_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = _FakeAdapter(
+        root_scripts=[[_Step(response='```repl\nvalue = lookup()\nllm_query("task")\n```')]]
+    )
+    runner = RecursiveRunner(lambda: adapter, custom_tools={"lookup": "retained"})
+
+    def broken_request(**kwargs: Any) -> None:
+        raise RuntimeError("controller bug")
+
+    monkeypatch.setattr("rcodex.runner.DelegateRequest", broken_request)
+    result, _ = await runner.run(
+        task="persist work before controller failure",
+        context=context_root,
+        state_directory=tmp_path / "state",
+        config=_config(),
+    )
+
+    assert result.status == RunStatus.failed
+    assert result.error is not None and result.error.code == RunErrorCode.unexpected
+    record = _iteration(result, "node_000001", 0)
+    assert record["error"]["details"]["error_type"] == "RuntimeError"
+    assert len(record["results"]) == 1
+    assert record["results"][0]["value"] == "retained"
+
+
+@pytest.mark.asyncio
 async def test_invalid_session_id_is_rejected_before_session_path_access(
     context_root: Path,
     tmp_path: Path,
@@ -2247,6 +2360,8 @@ async def test_repl_final_payload_obeys_final_result_limit(
     assert iteration["error"]["code"] == RunErrorCode.oversized_model_output
     assert iteration["error"]["details"]["max_bytes"] == 1024
     assert iteration["error"]["details"]["observed_bytes"] > 1024
+    assert iteration["executions"][0]["code"] == 'submit_answer("' + "a" * 1500 + '")'
+    assert iteration["executions"][0]["final_payload"] is None
 
 
 @pytest.mark.asyncio
