@@ -84,11 +84,25 @@ def _receive() -> dict[str, Any]:
     return value
 
 
-def _truncate_utf8(value: str, maximum: int) -> tuple[str, bool]:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= maximum:
-        return value, False
-    return encoded[:maximum].decode("utf-8", errors="ignore"), True
+class _BoundedTextBuffer(io.TextIOBase):
+    """Keep a UTF-8 prefix without retaining or encoding discarded output."""
+
+    def __init__(self, maximum: int) -> None:
+        super().__init__()
+        self._maximum = maximum
+        self._bytes = bytearray()
+        self.truncated = False
+
+    def write(self, value: str) -> int:
+        if not self.truncated:
+            remaining = self._maximum - len(self._bytes)
+            encoded = value[:remaining].encode("utf-8")
+            self._bytes.extend(encoded[:remaining])
+            self.truncated = len(value) > remaining or len(encoded) > remaining
+        return len(value)
+
+    def getvalue(self) -> str:
+        return self._bytes.decode("utf-8", errors="ignore")
 
 
 class _Context:
@@ -259,6 +273,8 @@ class _Worker:
                 "contexts": contexts,
             }
         )
+        if response.get("error") is not None:
+            raise ValueError(response["error"])
         values = response.get("values")
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise RuntimeError("REPL controller returned invalid query values")
@@ -326,8 +342,8 @@ class _Worker:
 
     def execute(self, code: str) -> dict[str, Any]:
         started = time.perf_counter()
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
+        stdout_buffer = _BoundedTextBuffer(self.max_output_bytes)
+        stderr_buffer = _BoundedTextBuffer(self.max_output_bytes)
         try:
             tree = ast.parse(code, mode="exec")
             _CodeValidator().visit(tree)
@@ -340,27 +356,23 @@ class _Worker:
             for name, value in self.protected.items():
                 self.namespace[name] = value
 
-        stdout, stdout_truncated = _truncate_utf8(stdout_buffer.getvalue(), self.max_output_bytes)
-        stderr, stderr_truncated = _truncate_utf8(stderr_buffer.getvalue(), self.max_output_bytes)
         final_payload: Any | None = None
         if self.answer.get("ready"):
             final_payload = self.answer.get("content")
             try:
                 json.dumps(final_payload, ensure_ascii=False, allow_nan=False)
             except (TypeError, ValueError):
-                stderr = (stderr + "Final answer is not strict JSON data.\n")[
-                    -self.max_output_bytes :
-                ]
+                stderr_buffer.write("Final answer is not strict JSON data.\n")
                 final_payload = None
             self.answer = _AnswerDict()
             self.protected["answer"] = self.answer
             self.namespace["answer"] = self.answer
         return {
             "type": "execution_result",
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
+            "stdout": stdout_buffer.getvalue(),
+            "stderr": stderr_buffer.getvalue(),
+            "stdout_truncated": stdout_buffer.truncated,
+            "stderr_truncated": stderr_buffer.truncated,
             "variable_types": self._variable_types(),
             "final_payload": final_payload,
             "duration_ms": round((time.perf_counter() - started) * 1000),

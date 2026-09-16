@@ -231,22 +231,20 @@ class ReplSession:
                             continue
                         if message_type == "query":
                             request_id = message.get("request_id")
-                            prompt_count = 1
+                            if not isinstance(request_id, str):
+                                raise ReplError("invalid query request_id")
                             try:
                                 raw_mode = message.get("mode")
-                                if not isinstance(raw_mode, str):
-                                    raise ValueError("query mode must be a string")
+                                if raw_mode not in ("leaf", "recursive"):
+                                    raise ValueError("queries support only leaf or recursive modes")
                                 mode = CallMode(raw_mode)
                                 prompts = message.get("prompts")
                                 model = message.get("model")
                                 contexts = message.get("contexts")
-                                if not isinstance(request_id, str):
-                                    raise ValueError("query request_id must be a string")
                                 if not isinstance(prompts, list) or not all(
                                     isinstance(prompt, str) for prompt in prompts
                                 ):
                                     raise ValueError("query prompts must be strings")
-                                prompt_count = len(prompts)
                                 if model is not None and not isinstance(model, str):
                                     raise ValueError("query model must be a string or None")
                                 if (
@@ -281,58 +279,45 @@ class ReplSession:
                                             ) from None
                                 if total > self._max_query_context_bytes:
                                     raise ValueError("contexts exceed max_query_context_bytes")
-                                values, results = await query_handler(
-                                    mode, prompts, model, contexts
-                                )
-                                calls.extend(results)
+                            except ValueError as exc:
                                 await self._write(
                                     {
                                         "type": "rpc_result",
                                         "request_id": request_id,
-                                        "values": values,
+                                        "error": str(exc),
                                     }
                                 )
-                            except Exception as exc:
-                                await self._write(
-                                    {
-                                        "type": "rpc_result",
-                                        "request_id": request_id,
-                                        "values": [f"Error: {type(exc).__name__}: {exc}"]
-                                        * prompt_count,
-                                    }
-                                )
+                                continue
+                            values, results = await query_handler(mode, prompts, model, contexts)
+                            calls.extend(results)
+                            await self._write(
+                                {
+                                    "type": "rpc_result",
+                                    "request_id": request_id,
+                                    "values": values,
+                                }
+                            )
                             continue
                         if message_type == "tool":
                             request_id = message.get("request_id")
-                            try:
-                                name = message.get("name")
-                                arguments = message.get("arguments")
-                                if not isinstance(request_id, str) or not isinstance(name, str):
-                                    raise ValueError("tool request identifiers must be strings")
-                                if not isinstance(arguments, dict):
-                                    raise ValueError("tool arguments must be an object")
-                                value, result = await tool_handler(name, arguments)
-                                calls.append(result)
-                                await self._write(
-                                    {
-                                        "type": "rpc_result",
-                                        "request_id": request_id,
-                                        "value": value,
-                                        "error": (
-                                            result.error.message
-                                            if result.error is not None
-                                            else None
-                                        ),
-                                    }
-                                )
-                            except Exception as exc:
-                                await self._write(
-                                    {
-                                        "type": "rpc_result",
-                                        "request_id": request_id,
-                                        "error": f"{type(exc).__name__}: {exc}",
-                                    }
-                                )
+                            name = message.get("name")
+                            arguments = message.get("arguments")
+                            if not isinstance(request_id, str) or not isinstance(name, str):
+                                raise ReplError("tool request identifiers must be strings")
+                            if not isinstance(arguments, dict):
+                                raise ReplError("tool arguments must be an object")
+                            value, result = await tool_handler(name, arguments)
+                            calls.append(result)
+                            await self._write(
+                                {
+                                    "type": "rpc_result",
+                                    "request_id": request_id,
+                                    "value": value,
+                                    "error": (
+                                        result.error.message if result.error is not None else None
+                                    ),
+                                }
+                            )
                             continue
                         if message_type == "execution_result":
                             variables = message.get("variable_types")

@@ -254,7 +254,8 @@ results = rlm_query_batched(
 `contexts` argument is a list of strings or `None`, with exactly one entry per prompt. The worker
 validates these arguments before dispatch and the controller independently validates the RPC.
 Wrong types, invalid text, mismatched lists, and oversized query contexts produce catchable Python
-errors through the public helpers; invalid RPCs return bounded error strings without input text.
+errors through the public helpers. Controller validation of malformed query RPC arguments also
+raises a catchable `ValueError` in the worker, with diagnostics that omit input text.
 The instruction retains its 16,384-character limit. Supplied text can exceed it.
 
 For an admitted child, the controller writes the complete text to
@@ -377,9 +378,10 @@ appear as bounded stderr; unsuccessful calls retain their status, error code, bo
 and error-message truncation flag. Error diagnostics may contain values included in exceptions.
 Use `print(SHOW_VARS())` to explicitly display variable names/types.
 
-The worker captures at most `max_repl_output_bytes` UTF-8 bytes per stream. Feedback initially
-projects at most 8,192 characters per stream/error message, reducing those lengths as needed to
-fit the complete encoded prompt within `max_repl_output_bytes`. Truncation flags indicate omitted
+The worker captures at most `max_repl_output_bytes` UTF-8 bytes per stream, discarding excess output
+as it is written. It retains a valid UTF-8 prefix even when the limit splits a character. Feedback
+initially projects at most 8,192 characters per stream/error message, reducing those lengths as needed
+to fit the complete encoded prompt within `max_repl_output_bytes`. Truncation flags indicate omitted
 output. Feedback also includes remaining call/turn budgets and, when space permits, the iteration
 artifact path. If metadata alone cannot fit, the node fails with `oversized-model-output`.
 
@@ -413,6 +415,12 @@ as bounded `stderr`; it does not crash the controller or erase the persistent na
 or iterations containing at least one unsuccessful call. An error-free iteration resets the
 count. Reaching the threshold ends the node with an error. Completed stdout from the latest
 execution is retained as a possible partial answer.
+
+Query and custom-tool request schema failures produce rejected `CallResult` entries with
+`invalid-tool-input`, so they count toward `max_errors` without consuming admission slots.
+A query batch is validated before dispatch; if any slot is invalid, every slot is recorded as
+rejected and none executes. Unexpected controller or RPC transport failures terminate the node
+and are recorded as errors instead of becoming query or tool return values.
 
 If all ordinary iterations are consumed, rcodex sends exactly one finalization turn with
 queries and tools disabled. That turn must return a fenced REPL block that signals a final
@@ -689,6 +697,10 @@ reference the same manifest without copying it. Every REPL and finalization iter
 executed code blocks, captured stdout/stderr, visible variable names and types, any typed final
 payload, ordered call results, usage, timing, validation error, phase, and compaction-completion
 flag.
+Completed blocks and call results remain in the iteration artifact when a later block or final
+answer fails validation, including during forced finalization. An invalid final payload is omitted
+while the execution record and validation diagnostic are retained. Completed call results are also
+retained if a later controller failure interrupts the same block.
 Successful context requests emit `context.accessed` events: enumeration records the entry count
 and next page offset; reads record the manifest ID and start/next byte offsets. These events
 contain no file body, and context responses do not become `CallResult` entries.
